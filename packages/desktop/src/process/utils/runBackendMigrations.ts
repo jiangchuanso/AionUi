@@ -5,6 +5,7 @@
  */
 
 import { execFile } from 'node:child_process';
+import { ipcBridge } from '@/common';
 import { migrateConfigStorage, migrateLegacyMcpConfigToDb, migrateProviders } from '@/common/config/configMigration';
 import { httpRequest } from '@/common/adapter/httpBridge';
 import { mcpService } from '@/common/adapter/ipcBridge';
@@ -444,6 +445,41 @@ async function ensureBootstrapMcpServersInDb(configFile: ConfigFile): Promise<vo
   );
 }
 
+/**
+ * Enable every built-in assistant and clear its disabled built-in skill list so
+ * all built-in assistants and skills are on by default. Idempotent: an assistant
+ * that is already enabled with no disabled built-in skills is skipped, so this
+ * only writes when the backend state actually differs.
+ */
+async function enableAllBuiltinAssistantsAndSkills(): Promise<boolean> {
+  const assistants = await ipcBridge.assistants.list.invoke();
+  const builtins = assistants.filter((assistant) => assistant.source === 'builtin');
+  let updated = 0;
+
+  for (const assistant of builtins) {
+    const needsEnable = assistant.enabled !== true;
+    const needsSkillReset = (assistant.disabled_builtin_skills?.length ?? 0) > 0;
+    if (!needsEnable && !needsSkillReset) continue;
+
+    try {
+      if (needsEnable) {
+        await ipcBridge.assistants.setState.invoke({ id: assistant.id, enabled: true });
+      }
+      if (needsSkillReset) {
+        await ipcBridge.assistants.update.invoke({ id: assistant.id, disabled_builtin_skills: [] });
+      }
+      updated += 1;
+    } catch (error) {
+      console.warn(`[AionUi] Failed to enable built-in assistant '${assistant.id}':`, error);
+    }
+  }
+
+  if (updated > 0) {
+    console.info('[AionUi] Enabled %d built-in assistant(s) with all built-in skills on', updated);
+  }
+  return true;
+}
+
 const MIGRATION_STEPS: Array<{
   name: string;
   run: (configFile: ConfigFile) => Promise<MigrationStepResult>;
@@ -459,6 +495,10 @@ const MIGRATION_STEPS: Array<{
     run: async (configFile) => (await ensureBootstrapMcpServersInDb(configFile), true),
   },
   { name: 'migrateAssistantsToBackend', run: async (configFile) => migrateAssistantsToBackend(configFile) },
+  {
+    name: 'enableAllBuiltinAssistantsAndSkills',
+    run: async () => enableAllBuiltinAssistantsAndSkills(),
+  },
 ];
 
 async function syncBuiltinMcpConfig(configFile: ConfigFile): Promise<void> {

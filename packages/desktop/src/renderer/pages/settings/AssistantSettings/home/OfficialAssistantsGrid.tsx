@@ -101,7 +101,7 @@ const OfficialAssistantsGrid: React.FC<OfficialAssistantsGridProps> = ({
           </div>
         ) : null}
         {officialAssistants.map((assistant) => {
-          const enabled = assistant.enabled !== false;
+          const enabled = assistant.source === 'builtin' || assistant.enabled !== false;
           const actionMenu = (
             <Menu
               onClickMenuItem={(key) => {

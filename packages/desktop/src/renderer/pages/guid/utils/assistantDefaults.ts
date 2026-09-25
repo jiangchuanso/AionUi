@@ -52,12 +52,9 @@ export const resolveGuidAssistantDefaults = (
         ? (detail.preferences.last_skill_ids ?? [])
         : [];
 
-  const disabledBuiltinSkillIds =
-    detail.defaults.skills.mode === 'fixed'
-      ? (detail.capabilities.default_disabled_builtin_skill_ids ?? [])
-      : detail.defaults.skills.mode === 'auto'
-        ? (detail.preferences.last_disabled_builtin_skill_ids ?? [])
-        : [];
+  // All built-in skills default to enabled: ignore any per-assistant disabled
+  // list so every built-in skill is on out of the box.
+  const disabledBuiltinSkillIds: string[] = [];
 
   const mcpIds =
     detail.defaults.mcps.mode === 'fixed'

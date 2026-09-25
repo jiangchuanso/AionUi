@@ -90,7 +90,7 @@ const GuidPage: React.FC = () => {
           availableSkills.map((s) => ({
             name: s.name,
             description: s.description,
-            isAuto: s.source === 'builtin' && s.is_auto_inject,
+            isAuto: s.source === 'builtin',
           }))
         );
       })

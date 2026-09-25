@@ -50,7 +50,7 @@ const compareLegacyAssistantOrder = (left: Assistant, right: Assistant): number 
  */
 export const selectableAssistants = (assistants: Assistant[], preferredOrder?: readonly string[]): Assistant[] => {
   const legacyOrdered = assistants
-    .filter((assistant) => assistant.enabled !== false)
+    .filter((assistant) => assistant.source === 'builtin' || assistant.enabled !== false)
     .toSorted(compareLegacyAssistantOrder);
 
   if (!preferredOrder || preferredOrder.length === 0) {
