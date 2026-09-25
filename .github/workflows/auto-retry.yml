@@ -1,0 +1,73 @@
+name: Auto Retry on Build Failure
+
+# GitHub only allows re-running a workflow run *after* it has finished. Calling
+# the rerun API from inside that same run always failed with
+# 403 "This workflow is already running", so the retry logic lives in its own
+# workflow triggered by `workflow_run` (i.e. once "Build and Release" completed).
+on:
+  workflow_run:
+    workflows: ['Build and Release']
+    types: [completed]
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  auto-retry-workflow:
+    name: Auto Retry on Build Failure
+    runs-on: ubuntu-latest
+    # 关键：只在首次失败时触发，避免无限循环
+    if: |
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.run_attempt == 1 &&
+      github.event.workflow_run.event == 'push'
+
+    steps:
+      - name: Log retry information
+        run: |
+          echo "=========================================="
+          echo "🔄 Auto retry triggered (first failure)"
+          echo "=========================================="
+          echo "Build failed on first attempt, preparing auto retry..."
+          echo "Source run: ${{ github.event.workflow_run.id }}"
+          echo "Current attempt: ${{ github.event.workflow_run.run_attempt }}"
+          echo "Wait strategy: 5 minutes cooldown before retry"
+          echo "=========================================="
+
+      - name: Wait before retry (5 min cooldown)
+        run: |
+          echo "⏳ Waiting 5 minutes before retry..."
+          echo "Start: $(date)"
+          sleep 300
+          echo "End: $(date)"
+          echo "Triggering retry..."
+
+      - name: Trigger workflow rerun
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          echo "🔄 Triggering full workflow rerun (attempt 2)..."
+
+          # Use re-run API (not rerun-failed-jobs, to avoid loops)
+          response=$(curl -sS -X POST \
+            -H "Accept: application/vnd.github.v3+json" \
+            -H "Authorization: token $GH_TOKEN" \
+            -w "\n%{http_code}" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runs/${RUN_ID}/rerun")
+
+          http_code=$(echo "$response" | tail -n1)
+
+          if [ "$http_code" = "201" ]; then
+            echo ""
+            echo "✅ Retry triggered successfully"
+            echo "This will be attempt 2"
+            echo "Details: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${RUN_ID}"
+          else
+            echo ""
+            echo "❌ Retry trigger failed, HTTP status: $http_code"
+            echo "Response:"
+            echo "$response" | head -n-1
+            exit 1
+          fi

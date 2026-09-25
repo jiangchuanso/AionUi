@@ -214,19 +214,24 @@ describe('AssistantSettings', () => {
     );
 
     const rows = screen.getAllByTestId(/^enabled-assistant-row-/);
+    // Fork: built-in assistants are always treated as enabled, so the built-in
+    // 'disabled' assistant (enabled: false) is still rendered as an enabled row.
     expect(rows.map((row) => row.getAttribute('data-testid'))).toEqual([
       'enabled-assistant-row-official',
       'enabled-assistant-row-custom',
       'enabled-assistant-row-cli',
+      'enabled-assistant-row-disabled',
     ]);
-    expect(screen.queryByTestId('enabled-assistant-row-disabled')).not.toBeInTheDocument();
-    expect(screen.getByText('Official')).toBeInTheDocument();
+    expect(screen.queryByTestId('enabled-assistant-row-disabled')).toBeInTheDocument();
+    // The built-in 'official' and 'disabled' rows both carry the "Official"
+    // source tag.
+    expect(screen.getAllByText('Official')).toHaveLength(2);
     expect(screen.getByText('Custom')).toBeInTheDocument();
     expect(screen.getByText('CLI')).toBeInTheDocument();
     // Runtime engine is shown with a label + logo (same "Agent: {logo}" style as
     // the My Assistants cards, i18n key `assistantRuntimeLabel`), not a bare
-    // backend name. The label renders once per enabled row.
-    expect(screen.getAllByTestId(/^assistant-runtime-/).length).toBe(3);
+    // backend name. The label renders once per rendered row.
+    expect(screen.getAllByTestId(/^assistant-runtime-/).length).toBe(4);
     expect(screen.queryByText('claude')).not.toBeInTheDocument();
     // Each enabled row exposes an enable switch so users can disable in place.
     expect(screen.getByTestId('switch-enabled-official')).toBeInTheDocument();

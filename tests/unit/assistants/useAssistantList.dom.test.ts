@@ -206,11 +206,14 @@ describe('useAssistantList', () => {
       await result.current.reorderEnabledAssistants('official', 'cli');
     });
 
-    expect(result.current.assistantOrder).toEqual(['official', 'cli', 'custom']);
+    // Fork: the built-in 'disabled' assistant (enabled: false) is still kept in
+    // the order because built-in assistants are always treated as enabled.
+    expect(result.current.assistantOrder).toEqual(['official', 'cli', 'custom', 'disabled']);
     expect(assistantOrderConfigMock.service.set).toHaveBeenCalledWith('assistants.enabledOrder', [
       'official',
       'cli',
       'custom',
+      'disabled',
     ]);
     expect(ipcBridge.assistants.setState.invoke).not.toHaveBeenCalled();
   });

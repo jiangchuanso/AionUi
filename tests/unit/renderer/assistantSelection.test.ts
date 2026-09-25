@@ -80,10 +80,14 @@ describe('assistantOrderAfterToggle', () => {
     mk('disabled', 'builtin', 2, false),
   ];
 
-  it('removes a disabled assistant from the enabled order', () => {
+  // Fork: built-in assistants are always treated as enabled/selectable, so
+  // toggling a non-builtin off only removes that assistant; the built-in
+  // 'disabled' assistant stays in the order.
+  it('removes a toggled-off non-builtin while built-in assistants stay enabled', () => {
     expect(assistantOrderAfterToggle(assistants, ['official', 'cli', 'custom'], 'cli', false)).toEqual([
       'official',
       'custom',
+      'disabled',
     ]);
   });
 

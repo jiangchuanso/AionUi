@@ -102,12 +102,14 @@ describe('resolveGuidAssistantDefaults', () => {
       )
     );
 
+    // Fork: all built-in skills default to enabled, so the remembered
+    // `last_disabled_builtin_skill_ids` is intentionally ignored.
     expect(resolved).toEqual({
       modelId: 'claude-sonnet-4',
       permissionMode: 'plan',
       thoughtLevel: 'high',
       skillIds: ['skill-a'],
-      disabledBuiltinSkillIds: ['skill-b'],
+      disabledBuiltinSkillIds: [],
       mcpIds: ['mcp-1'],
     });
   });
