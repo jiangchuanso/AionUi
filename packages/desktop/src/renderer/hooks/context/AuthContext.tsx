@@ -1,6 +1,5 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { PREVIEW_SCOPE_KEY_PREFIX } from '@/renderer/pages/conversation/Preview/context/previewScope';
-import { refreshSession } from '@/common/adapter/sessionRefresh';
 // M6: CSRF removed with legacy webserver — stub functions for compatibility, re-implement in M7
 const withCsrfToken = <T extends Record<string, unknown>>(data: T): T => data;
 const hasValidCsrfToken = (): boolean => true;
@@ -47,8 +46,6 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
-const AUTH_USER_ENDPOINT = '/api/auth/user';
-
 const isDesktopRuntime = typeof window !== 'undefined' && Boolean(window.electronAPI);
 
 // Clear expired auth cache including cookies and localStorage
@@ -84,50 +81,6 @@ function clearAuthCache(): void {
   }
 }
 
-async function fetchCurrentUser(signal?: AbortSignal): Promise<AuthUser | null> {
-  try {
-    let response = await fetch(AUTH_USER_ENDPOINT, {
-      method: 'GET',
-      credentials: 'include',
-      signal,
-    });
-
-    // The access cookie may have expired — attempt one silent session refresh
-    // and re-check before concluding the user is unauthenticated. Without this
-    // the status poll would kick a refreshable session to /login (#4124).
-    // refreshSession() single-flights with the httpBridge refresh path.
-    if (response.status === 401) {
-      const refreshed = await refreshSession();
-      if (refreshed) {
-        response = await fetch(AUTH_USER_ENDPOINT, {
-          method: 'GET',
-          credentials: 'include',
-          signal,
-        });
-      }
-    }
-
-    if (!response.ok) {
-      return null;
-    }
-
-    const data = (await response.json()) as {
-      success: boolean;
-      user?: AuthUser;
-    };
-    if (data.success && data.user) {
-      return data.user;
-    }
-  } catch (error) {
-    if ((error as Error).name === 'AbortError') {
-      return null;
-    }
-    console.error('Failed to fetch current user:', error);
-  }
-
-  return null;
-}
-
 export const AuthProvider: React.FC<React.PropsWithChildren> = ({ children }) => {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [status, setStatus] = useState<AuthStatus>('checking');
@@ -135,26 +88,10 @@ export const AuthProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
   const abortRef = useRef<AbortController | null>(null);
 
   const refresh = useCallback(async () => {
-    if (isDesktopRuntime) {
-      setStatus('authenticated');
-      setUser(null);
-      setReady(true);
-      return;
-    }
-
-    abortRef.current?.abort();
-    const controller = new AbortController();
-    abortRef.current = controller;
-    setStatus('checking');
-
-    const currentUser = await fetchCurrentUser(controller.signal);
-    if (currentUser) {
-      setUser(currentUser);
-      setStatus('authenticated');
-    } else {
-      setUser(null);
-      setStatus('unauthenticated');
-    }
+    // This build does not require login: every runtime is treated as
+    // authenticated so the app stays usable without signing in.
+    setStatus('authenticated');
+    setUser(null);
     setReady(true);
   }, []);
 
