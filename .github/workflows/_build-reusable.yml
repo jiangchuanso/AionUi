@@ -241,13 +241,17 @@ jobs:
 
           for name in SENTRY_AUTH_TOKEN SENTRY_ORG SENTRY_PROJECT SENTRY_RELEASE; do
             if [ -z "${!name:-}" ]; then
-              echo "::error title=Sentry configuration missing::$name is required for desktop source map uploads"
+              echo "::warning title=Sentry configuration missing::$name is not set - skipping desktop source map uploads"
               missing=1
             fi
           done
 
           if [ "$missing" -ne 0 ]; then
-            exit 1
+            # Fork-friendly: a missing Sentry setup must not fail the whole build/release.
+            # electron.vite.config.ts already disables the upload when SENTRY_AUTH_TOKEN is empty.
+            echo "SENTRY_UPLOAD_SOURCE_MAPS=false" >> "$GITHUB_ENV"
+            echo "Sentry source map upload disabled for this build."
+            exit 0
           fi
 
           echo "Sentry source map upload configured for $SENTRY_ORG/$SENTRY_PROJECT ($SENTRY_RELEASE)"
