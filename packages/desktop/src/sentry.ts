@@ -118,12 +118,16 @@ export function initSentry(): void {
     dsn: process.env.SENTRY_DSN,
     environment: app.isPackaged ? 'production' : 'development',
     // Intranet / offline safety: never block the app (or a conversation) on an
-    // unreachable DSN. Give up sending quickly and stay silent on failure so the
-    // UI never stalls waiting for Sentry's transport to time out.
-    sendTimeout: 2000,
+    // unreachable DSN. Sends are asynchronous and the Electron SDK persists
+    // un-sendable envelopes to its offline store instead of blocking the caller,
+    // so the only place that waits on the network is the flush during shutdown —
+    // keep it short so quitting never hangs on an unreachable DSN.
+    shutdownTimeout: 2000,
     // Avoid background session/trace/profile POSTs that would otherwise probe the
-    // network continuously even when no error is occurring.
-    autoSessionTracking: false,
+    // network continuously even when no error is occurring. `MainProcessSession`
+    // is what would send a session envelope on every app run and delay quit by up
+    // to 2s while flushing it.
+    integrations: (integrations) => integrations.filter((integration) => integration.name !== 'MainProcessSession'),
     tracesSampleRate: 0,
     profilesSampleRate: 0,
     beforeSend(event) {
