@@ -1838,7 +1838,7 @@ export interface ICreateConversationParams {
       use_external_gateway?: boolean;
       cli_path?: string;
     };
-    web_search_engine?: 'google' | 'default';
+    web_search_engine?: 'google' | 'searxng' | 'default';
     context?: string;
     context_file_name?: string;
     /** Transient: preset opt-in skills. Consumed by backend create handler

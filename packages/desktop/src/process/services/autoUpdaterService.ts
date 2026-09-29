@@ -31,6 +31,30 @@ const DEBUG_AUTO_UPDATE_CURRENT_VERSION_ENV = 'AIONUI_DEBUG_AUTO_UPDATE_CURRENT_
 const MAC_NATIVE_INSTALL_READY_TIMEOUT_MS = 60_000;
 
 /**
+ * Network guard for update checks. On an intranet with no route to the CDN
+ * (static.aionui.com), a bare `checkForUpdates()` can hang until the OS TCP/DNS
+ * timeout (tens of seconds), making the app feel frozen at startup. Race the
+ * check against a short timeout and treat expiry as "no update" so the UI never
+ * stalls. The capability is preserved: when the network is reachable the check
+ * still completes normally.
+ */
+const UPDATE_CHECK_TIMEOUT_MS = 6_000;
+const UPDATE_CHECK_DISABLED_ENV = 'AIONUI_DISABLE_UPDATE_CHECK';
+
+function isUpdateCheckDisabled(): boolean {
+  const v = process.env[UPDATE_CHECK_DISABLED_ENV];
+  return v === '1' || v === 'true' || v === 'yes';
+}
+
+function withNetworkTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<T | null>((resolve) => {
+    timer = setTimeout(() => resolve(null), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+/**
  * Returns the appropriate update channel name based on the current platform and architecture.
  * Returns undefined for the default channel (Windows x64 / Linux x64).
  */
@@ -616,13 +640,24 @@ class AutoUpdaterService extends EventEmitter {
         appIsPackaged: app.isPackaged,
       });
 
+      if (isUpdateCheckDisabled()) {
+        log.info('[auto-update] check skipped (update checks disabled by env)');
+        return { success: true };
+      }
+
       if (this._allowPrerelease) {
         log.info('Skipping electron-updater check for prerelease manual mode');
         log.debug('[auto-update] CDN stable feed skipped because prerelease mode is handled by GitHub API');
         return { success: true };
       }
 
-      const result = await autoUpdater.checkForUpdates();
+      const result = await withNetworkTimeout(autoUpdater.checkForUpdates(), UPDATE_CHECK_TIMEOUT_MS);
+      if (result === null) {
+        // Timed out reaching the CDN — treat as no update so startup/conversation
+        // never blocks on an unreachable external host.
+        log.warn(`[auto-update] checkForUpdates timed out after ${UPDATE_CHECK_TIMEOUT_MS}ms (network unreachable?)`);
+        return { success: false, error: 'update check timed out (network unreachable?)' };
+      }
       if (!result) {
         const { default: i18n } = await import('./i18n');
         log.debug('[auto-update] checkForUpdates returned null');
@@ -903,10 +938,16 @@ class AutoUpdaterService extends EventEmitter {
    * Check for updates and notify (for startup)
    */
   async checkForUpdatesAndNotify(): Promise<void> {
+    if (isUpdateCheckDisabled()) {
+      log.info('[auto-update] startup check skipped (update checks disabled by env)');
+      return;
+    }
     try {
       // Ensure clean state: prevent stale allowDowngrade=true from prior setAllowPrerelease(true) calls
       autoUpdater.allowDowngrade = false;
-      await autoUpdater.checkForUpdatesAndNotify();
+      // Race against a short timeout so an unreachable CDN fails fast instead of
+      // hanging the app on an intranet.
+      await withNetworkTimeout(autoUpdater.checkForUpdatesAndNotify(), UPDATE_CHECK_TIMEOUT_MS);
     } catch (error) {
       log.error('Auto-update check failed:', error);
     }

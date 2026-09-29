@@ -117,6 +117,15 @@ export function initSentry(): void {
   Sentry.init({
     dsn: process.env.SENTRY_DSN,
     environment: app.isPackaged ? 'production' : 'development',
+    // Intranet / offline safety: never block the app (or a conversation) on an
+    // unreachable DSN. Give up sending quickly and stay silent on failure so the
+    // UI never stalls waiting for Sentry's transport to time out.
+    sendTimeout: 2000,
+    // Avoid background session/trace/profile POSTs that would otherwise probe the
+    // network continuously even when no error is occurring.
+    autoSessionTracking: false,
+    tracesSampleRate: 0,
+    profilesSampleRate: 0,
     beforeSend(event) {
       const haystacks = collectEventSearchText(event);
       if (GPU_CRASH_DROP_PATTERNS.some((re) => haystacks.some((h) => re.test(h)))) {

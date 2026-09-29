@@ -229,6 +229,11 @@ export function buildSpawnEnv(dirs?: BackendDirConfig): NodeJS.ProcessEnv {
   // non-empty value, aborting the agent before the ACP handshake (#4070).
   const { PREBUILDS_ONLY: _prebuildsOnly, ...parentEnv } = process.env;
   if (!dirs) return parentEnv;
+  // NOTE: every variable present in the desktop's environment is inherited by
+  // aioncore via `parentEnv`. Operators running on an intranet can therefore
+  // route web search to a self-hosted instance (e.g. searxng) by launching the
+  // desktop with AIONUI_WEB_SEARCH_ENDPOINT set — no code change in the desktop
+  // is required for the backend to pick it up.
   return {
     ...parentEnv,
     AIONUI_CACHE_DIR: dirs.cacheDir,
