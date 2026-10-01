@@ -597,6 +597,42 @@ jobs:
           echo ""
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
+      # Linux: 目标机兼容性静态校验（麒麟 V10 SP1 桌面版基于 Ubuntu 20.04）
+      # 重点防三类问题：缺系统依赖「装得上点不开」、图标尺寸超出 hicolor 主题索引范围
+      # 导致「菜单里没图标」、包描述里残留未替换的模板变量。
+      - name: Verify deb package (deps / icon / desktop entry)
+        if: startsWith(matrix.platform, 'linux') && success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          deb="$(ls out/*.deb | head -1)"
+          echo "== $deb =="
+          echo "--- Depends ---"
+          dpkg-deb -f "$deb" Depends
+          echo "--- Recommends ---"
+          dpkg-deb -f "$deb" Recommends
+
+          contents="$(dpkg-deb -c "$deb")"
+
+          echo "$contents" | grep -E 'usr/share/applications/.*\.desktop' \
+            || { echo "::error::deb 里没有 .desktop 启动器"; exit 1; }
+          echo "$contents" | grep -E 'usr/share/icons/hicolor/[0-9]+x[0-9]+/apps/.*\.png' \
+            || { echo "::error::deb 里没有 hicolor 图标"; exit 1; }
+
+          # hicolor 主题的 index.theme 只声明到 512x512；更大的目录不会被 GTK/UKUI 索引，
+          # 菜单里会显示空白图标。
+          oversized="$(echo "$contents" | grep -oE 'hicolor/[0-9]+x[0-9]+' | sort -u | awk -F'[x/]' '$2 > 512')"
+          if [ -n "$oversized" ]; then
+            echo "::error::图标尺寸超出 hicolor 主题索引范围（最大 512x512）: ${oversized}"
+            exit 1
+          fi
+
+          if dpkg-deb -I "$deb" | grep -F '${description}'; then
+            echo "::error::deb 元数据里出现未替换的 \${description} 模板变量"
+            exit 1
+          fi
+          echo "✅ deb 校验通过"
+
       - name: List build artifacts
         if: success() || failure()
         shell: bash
