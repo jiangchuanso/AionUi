@@ -391,11 +391,14 @@ jobs:
           echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
           echo "is_dev=$IS_DEV" >> $GITHUB_OUTPUT
 
-      # 安装包产物来自 build-pipeline 的多平台 job
-      - name: Download all build artifacts
-        uses: actions/download-artifact@v7
-        with:
-          path: build-artifacts
+      # 安装包产物来自 build-pipeline / pack-web-cli / docker-images 各 job。
+      # 改为逐 artifact 下载 + 独立重试（见脚本内注释）：原 download-artifact@v7
+      # 不带 name 一次性并发拉全部 16 个产物，任一失败即整体中止且不报具体是哪个，
+      # 还会拉两个用不上的 .dockerbuild 元数据产物。
+      - name: Download release artifacts (resilient per-artifact)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/download-release-artifacts.sh "${GITHUB_RUN_ID}" build-artifacts
 
       - name: Prepare release assets (normalize updater metadata)
         shell: bash
