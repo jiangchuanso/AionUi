@@ -79,6 +79,29 @@ if [ -n "$INSTALL_SCRIPT" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# 1d) Copy Docker image tarballs (+ sha256 checksums)
+# ---------------------------------------------------------------------------
+echo "==> Copying Docker image tarballs from $ARTIFACTS_DIR ..."
+DOCKER_FILES=()
+while IFS= read -r file; do
+  DOCKER_FILES+=("$file")
+done < <(find "$ARTIFACTS_DIR" -type f \( \
+  -name "aionui-docker-*.tar" -o \
+  -name "aionui-docker-*.tar.sha256" \
+\) | sort)
+
+DOCKER_DUPS=$(for file in "${DOCKER_FILES[@]}"; do basename "$file"; done | sort | uniq -d || true)
+if [ -n "$DOCKER_DUPS" ]; then
+  echo "::error::Duplicate Docker artifact basenames:"
+  echo "$DOCKER_DUPS"
+  exit 1
+fi
+
+for file in "${DOCKER_FILES[@]}"; do
+  cp -f "$file" "$OUTPUT_DIR/"
+done
+
+# ---------------------------------------------------------------------------
 # 2) Collect updater metadata from each platform artifact directory
 # ---------------------------------------------------------------------------
 echo "==> Collecting updater metadata ..."
@@ -174,6 +197,23 @@ if [ ! -f "$OUTPUT_DIR/install-web.sh" ]; then
   echo "::error::Missing install-web.sh"
   MISSING=1
 fi
+
+# ---------------------------------------------------------------------------
+# 5d) Hard validation for Docker image assets
+# ---------------------------------------------------------------------------
+echo "==> Validating Docker image assets ..."
+
+for plat in amd64 arm64; do
+  image="aionui-docker-${VERSION}-linux-${plat}.tar"
+  if [ ! -f "$OUTPUT_DIR/$image" ]; then
+    echo "::error::Missing Docker image tarball: $image"
+    MISSING=1
+  fi
+  if [ ! -f "$OUTPUT_DIR/$image.sha256" ]; then
+    echo "::error::Missing Docker image checksum: $image.sha256"
+    MISSING=1
+  fi
+done
 
 if [ "$MISSING" -ne 0 ]; then
   exit 1

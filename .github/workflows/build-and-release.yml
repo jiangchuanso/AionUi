@@ -2,6 +2,7 @@ name: Build and Release
 
 permissions:
   contents: write
+  packages: write
   issues: read
   pull-requests: read
   actions: write
@@ -85,6 +86,159 @@ jobs:
       append_commit_hash: false
       skip_code_quality: true
     secrets: inherit
+
+  # Docker 镜像产物（x64 / arm64）。
+  # 复用 pack-web-cli 产出的 linux tarball 作为构建上下文：镜像 = tarball 内容
+  # （aionui-web 二进制 + aioncore 后端 + SPA 静态资源）+ 预装 officecli +
+  # libicu，开箱即用，无需在客户服务器上再安装任何组件。
+  # 镜像 tar 同时作为 Release 产物附加；GHCR 推送为尽力而为（登录失败不阻塞）。
+  docker-images:
+    name: Build Docker Image (${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    needs: pack-web-cli
+    # dev 分支或正式 tag 触发构建（排除 -dev- tag，避免重复构建）
+    if: needs.code-quality.result == 'success' && (github.ref == 'refs/heads/dev' || (startsWith(github.ref, 'refs/tags/') && !contains(github.ref, '-dev-'))) && needs.pack-web-cli.result == 'success'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x64, os: ubuntu-latest, platform: 'linux/amd64', suffix: 'amd64' }
+          - { arch: arm64, os: ubuntu-24.04-arm, platform: 'linux/arm64', suffix: 'arm64' }
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Get version from package.json
+        id: version
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Download web-cli tarball (linux-${{ matrix.arch }})
+        uses: actions/download-artifact@v7
+        with:
+          name: web-cli-linux-${{ matrix.arch }}
+          path: dist-web-cli
+
+      - name: Stage Docker build context
+        run: |
+          mkdir -p dist-docker/context
+          # 归一化文件名，Dockerfile 通过 WEB_CLI_TARBALL 接收
+          cp dist-web-cli/aionui-web-*.tar.gz dist-docker/context/aionui-web.tar.gz
+          ls -lh dist-docker/context/
+
+      - name: Log in to GHCR
+        id: ghcr_login
+        continue-on-error: true
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      # 镜像 tar 产物是 Release 附件，构建不依赖 registry：始终本地 load
+      - name: Build image (${{ matrix.platform }})
+        uses: docker/build-push-action@v6
+        with:
+          context: dist-docker/context
+          file: Dockerfile
+          platforms: ${{ matrix.platform }}
+          push: false
+          load: true
+          build-args: |
+            WEB_CLI_TARBALL=aionui-web.tar.gz
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/aionui:${{ steps.version.outputs.version }}-${{ matrix.suffix }}
+          labels: |
+            org.opencontainers.image.title=AionUi
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+
+      # 冒烟测试：officecli 能在镜像内直接执行（ICU 检查），且服务端能完整拉起
+      - name: Smoke test image
+        run: |
+          IMAGE="ghcr.io/${{ github.repository_owner }}/aionui:${{ steps.version.outputs.version }}-${{ matrix.suffix }}"
+          # officecli 预装验证：.NET 二进制无 ICU 会直接 abort
+          docker run --rm --entrypoint /usr/local/bin/officecli "$IMAGE" --version
+          # 完整启动验证：SPA + 后端 + /api 代理
+          docker run -d --name aionui-smoke -p 3000:3000 "$IMAGE"
+          ready=""
+          for i in $(seq 1 45); do
+            if curl -fsS http://127.0.0.1:3000/api/system/info > /tmp/sysinfo.json 2>/dev/null; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          docker logs aionui-smoke | tail -30 || true
+          docker rm -f aionui-smoke > /dev/null || true
+          if [ -z "$ready" ]; then
+            echo "::error::Container did not become ready within 90s"
+            exit 1
+          fi
+          echo "✓ /api/system/info:"
+          cat /tmp/sysinfo.json
+
+      # GHCR 推送为尽力而为：失败只告警，不影响镜像 tar 产物
+      - name: Push image to GHCR
+        if: steps.ghcr_login.outcome == 'success'
+        continue-on-error: true
+        run: |
+          docker push "ghcr.io/${{ github.repository_owner }}/aionui:${{ steps.version.outputs.version }}-${{ matrix.suffix }}"
+
+      - name: Save image tarball
+        run: |
+          IMAGE="ghcr.io/${{ github.repository_owner }}/aionui:${{ steps.version.outputs.version }}-${{ matrix.suffix }}"
+          OUT="dist-docker/aionui-docker-${{ steps.version.outputs.version }}-linux-${{ matrix.suffix }}.tar"
+          docker save "$IMAGE" -o "$OUT"
+          sha256sum "$OUT" > "$OUT.sha256"
+          ls -lh dist-docker/*.tar dist-docker/*.tar.sha256
+
+      - name: Upload image tarball artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: docker-image-linux-${{ matrix.suffix }}
+          path: |
+            dist-docker/*.tar
+            dist-docker/*.tar.sha256
+          retention-days: 7
+
+  # 把两个架构的镜像合并成一个 multi-arch manifest 推到 GHCR
+  # （docker pull ghcr.io/<owner>/aionui:<version> 自动选架构）。
+  # 纯尽力而为：GHCR 推送失败不影响 Release 镜像 tar 产物。
+  docker-manifest:
+    name: Publish Multi-arch Docker Manifest
+    runs-on: ubuntu-latest
+    needs: docker-images
+    if: needs.code-quality.result == 'success' && (github.ref == 'refs/heads/dev' || (startsWith(github.ref, 'refs/tags/') && !contains(github.ref, '-dev-'))) && needs.docker-images.result == 'success'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Get version from package.json
+        id: version
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Log in to GHCR
+        id: ghcr_login
+        continue-on-error: true
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Create multi-arch manifest
+        if: steps.ghcr_login.outcome == 'success'
+        continue-on-error: true
+        run: |
+          IMAGE="ghcr.io/${{ github.repository_owner }}/aionui"
+          VERSION="${{ steps.version.outputs.version }}"
+          docker buildx imagetools create -t "$IMAGE:$VERSION" \
+            "$IMAGE:$VERSION-amd64" "$IMAGE:$VERSION-arm64"
+          # 仅正式 tag 发布时移动 latest
+          if [[ "$GITHUB_REF" == refs/tags/* && "$GITHUB_REF" != *-dev-* ]]; then
+            docker buildx imagetools create -t "$IMAGE:latest" \
+              "$IMAGE:$VERSION-amd64" "$IMAGE:$VERSION-arm64"
+          fi
 
   # 自动重试 workflow 见 .github/workflows/auto-retry.yml
   # 原因：GitHub 只允许对「已结束」的 run 调用 rerun API，在本 run 内部调用
@@ -203,12 +357,14 @@ jobs:
   # 发布到 GitHub Releases
   # Fork 说明：已移除 PUBLISH_RELEASE 开关。正式 tag 推送一律走完整构建，并把安装包附加到
   # Release；构建或打包失败时不再产出「空 Release」，避免误以为发版成功。
+  # 产物包含：桌面安装包、web-cli tarball、install-web.sh、Docker 镜像 tar（x64/arm64）。
   release:
     name: Create Release
     runs-on: ubuntu-latest
-    needs: [code-quality, build-pipeline, create-tag, pack-web-cli]
+    needs: [code-quality, build-pipeline, create-tag, pack-web-cli, docker-images]
     # Tag 推送时 create-tag 会被跳过，所以需要检查两种情况（排除 -dev- tag 避免重复）
-    if: always() && needs.code-quality.result == 'success' && (needs.create-tag.result == 'success' || (startsWith(github.ref, 'refs/tags/') && !contains(github.ref, '-dev-'))) && needs.build-pipeline.result == 'success' && needs.pack-web-cli.result == 'success'
+    # docker-manifest 是尽力而为的 GHCR 推送，不作为 Release 的前置条件
+    if: always() && needs.code-quality.result == 'success' && (needs.create-tag.result == 'success' || (startsWith(github.ref, 'refs/tags/') && !contains(github.ref, '-dev-'))) && needs.build-pipeline.result == 'success' && needs.pack-web-cli.result == 'success' && needs.docker-images.result == 'success'
     # dev 分支使用 dev-release 环境，正式 tag 使用 release 环境
     environment: ${{ needs.create-tag.outputs.is_dev == 'true' && 'dev-release' || 'release' }}
 
@@ -258,6 +414,7 @@ jobs:
             release-assets/**/*.zip
             release-assets/**/*.yml
             release-assets/**/*.tar.gz
+            release-assets/**/*.tar
             release-assets/**/*.sha256
             release-assets/install-web.sh
           generate_release_notes: true
