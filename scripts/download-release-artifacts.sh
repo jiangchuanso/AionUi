@@ -22,11 +22,22 @@ set -uo pipefail
 RUN_ID="${1:?usage: download-release-artifacts.sh <RUN_ID> [OUT_DIR]}"
 OUT_DIR="${2:-build-artifacts}"
 
-REPO="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is not set}"
-TOKEN="${GITHUB_TOKEN:?GITHUB_TOKEN is required (set it in the step env)}"
+# `gh run download` needs an auth token; surface a clear error if neither is set.
+if [ -z "${GH_TOKEN:-}" ] && [ -z "${GITHUB_TOKEN:-}" ]; then
+  echo "::error::GITHUB_TOKEN (or GH_TOKEN) is required to download artifacts" >&2
+  exit 1
+fi
 
 MAX_RETRIES=10
-API_BASE="https://api.github.com/repos/${REPO}/actions/runs/${RUN_ID}/artifacts"
+
+# `gh` needs an auth token. Prefer GH_TOKEN, fall back to GITHUB_TOKEN (the
+# step exports GITHUB_TOKEN); export whichever is present so `gh run download`
+# is authenticated.
+if [ -n "${GH_TOKEN:-}" ]; then
+  export GH_TOKEN
+elif [ -n "${GITHUB_TOKEN:-}" ]; then
+  export GH_TOKEN="$GITHUB_TOKEN"
+fi
 
 # Only the artifacts the release pipeline actually consumes. The two
 # `*.dockerbuild` metadata artifacts produced by docker/build-push-action are
@@ -50,49 +61,23 @@ ARTIFACT_NAMES=(
 
 mkdir -p "$OUT_DIR"
 
-resolve_id() {
-  local name="$1"
-  # Capture the full id list first to avoid SIGPIPE from `head` closing the pipe
-  # early (which would make `jq` return non-zero under pipefail).
-  local ids
-  ids=$(curl -sS -H "Authorization: Bearer ${TOKEN}" \
-    -H "Accept: application/vnd.github+json" \
-    "${API_BASE}?per_page=100" \
-    | jq -r --arg n "$name" '.artifacts[]? | select(.name == $n) | .id' 2>/dev/null || true)
-  printf '%s\n' "$ids" | head -n 1
-}
-
+# Why `gh run download` instead of hand-rolled `curl` against the artifacts
+# API zip endpoint: for v4/v6 artifacts the API returns a 302 redirect to
+# signed blob storage, and large artifacts (e.g. the ~560MB macos DMG zip)
+# were reliably coming back as a tiny non-zip body via curl — unzip then fails
+# with "End-of-central-directory signature not found" and the release dies.
+# `gh run download` resolves by name and follows the storage redirect properly,
+# extracting directly into $OUT_DIR/$name/.
 for name in "${ARTIFACT_NAMES[@]}"; do
-  echo "==> Resolving artifact id: $name"
-  aid=""
-  for attempt in $(seq 1 "$MAX_RETRIES"); do
-    aid=$(resolve_id "$name")
-    if [ -n "$aid" ]; then break; fi
-    echo "::warning::Could not resolve $name (attempt $attempt/$MAX_RETRIES); retrying in 5s"
-    sleep 5
-  done
-  if [ -z "$aid" ]; then
-    echo "::error::Artifact '$name' not found in run $RUN_ID"
-    exit 1
-  fi
-
+  echo "==> Downloading artifact: $name"
   success=0
   for attempt in $(seq 1 "$MAX_RETRIES"); do
-    tmp=$(mktemp -d)
-    if curl -sSL -H "Authorization: Bearer ${TOKEN}" \
-      -H "Accept: application/vnd.github+json" \
-      "${API_BASE%/*}/artifacts/${aid}/zip" \
-      -o "$tmp/art.zip" && [ -s "$tmp/art.zip" ]; then
-      mkdir -p "$OUT_DIR/$name"
-      if unzip -o -q "$tmp/art.zip" -d "$OUT_DIR/$name"; then
-        echo "✓ $name -> $OUT_DIR/$name"
-        success=1
-        rm -rf "$tmp"
-        break
-      fi
+    if gh run download "$RUN_ID" --name "$name" --dir "$OUT_DIR" 2>/dev/null; then
+      echo "✓ $name -> $OUT_DIR/$name"
+      success=1
+      break
     fi
-    echo "::warning::Download/extract of '$name' failed (attempt $attempt/$MAX_RETRIES); retrying in $((attempt * 5))s"
-    rm -rf "$tmp"
+    echo "::warning::Download of '$name' failed (attempt $attempt/$MAX_RETRIES); retrying in $((attempt * 5))s"
     sleep $((attempt * 5))
   done
 
