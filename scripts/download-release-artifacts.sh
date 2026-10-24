@@ -170,6 +170,13 @@ for name in "${ARTIFACT_NAMES[@]}"; do
     if gh run download "$RUN_ID" --name "$name" --dir "$OUT_DIR" 2>>"$errlog" \
        && [ -n "$(ls -A "$OUT_DIR/${name}" 2>/dev/null)" ]; then
       echo "✓ $name -> $OUT_DIR/$name (gh fallback)"
+      # Keep the curl diagnostics even though the fallback recovered: *why* the
+      # primary path failed is the signal needed when downloads start failing in
+      # bulk (v2.2.2 was un-diagnosable precisely because it was discarded).
+      if [ -s "$errlog" ]; then
+        echo "::warning::curl download of '$name' failed; recovered via gh fallback. Error output:"
+        sed 's/^/    /' "$errlog" >&2
+      fi
       success=1
       rm -f "$errlog"
       break
