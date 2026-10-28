@@ -261,7 +261,8 @@
   "engines": {
     "node": ">=22 <25"
   },
-  "aioncoreVersion": "v0.2.2",
+  "aioncoreRepo": "jiangchuanso/AionCore",
+  "aioncoreVersion": "v0.2.3",
   "electronRebuild": {
     "electronVersion": "^37.3.1"
   },

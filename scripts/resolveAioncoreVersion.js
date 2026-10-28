@@ -33,4 +33,31 @@ function resolveAioncoreVersion(projectRoot) {
   return 'latest';
 }
 
-module.exports = { resolveAioncoreVersion };
+/**
+ * Resolve the GitHub repository (owner/repo) that hosts the aioncore assets.
+ *
+ * Order:
+ *   1. AIONUI_BACKEND_REPO env (ad-hoc override, e.g. CI dispatch input)
+ *   2. "aioncoreRepo" field in repo-root package.json (the fork pin)
+ *   3. 'iOfficeAI/AionCore' (upstream default)
+ */
+function resolveAioncoreRepo(projectRoot) {
+  const envOverride = process.env.AIONUI_BACKEND_REPO;
+  if (envOverride && envOverride.trim()) {
+    return envOverride.trim();
+  }
+
+  try {
+    const pkgPath = path.join(projectRoot, 'package.json');
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
+    if (pkg && typeof pkg.aioncoreRepo === 'string' && pkg.aioncoreRepo.trim()) {
+      return pkg.aioncoreRepo.trim();
+    }
+  } catch {
+    // fall through
+  }
+
+  return 'iOfficeAI/AionCore';
+}
+
+module.exports = { resolveAioncoreRepo, resolveAioncoreVersion };

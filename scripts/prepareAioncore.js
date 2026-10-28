@@ -12,22 +12,24 @@
  * Environment variables:
  *  - AIONUI_BACKEND_RUN_ID: AionCore Manual Build workflow run id
  *  - AIONUI_BACKEND_VERSION: override the pinned version
+ *  - AIONUI_BACKEND_REPO: override the pinned repository (owner/repo)
  *  - AIONUI_BACKEND_ARCH: target architecture (default: process.arch)
  *  - GH_TOKEN / GITHUB_TOKEN: GitHub API token (for rate limiting)
  */
 
 const path = require('path');
 const { prepareAioncore } = require('../packages/shared-scripts/src/prepare-aioncore.js');
-const { resolveAioncoreVersion } = require('./resolveAioncoreVersion.js');
+const { resolveAioncoreRepo, resolveAioncoreVersion } = require('./resolveAioncoreVersion.js');
 
 const projectRoot = path.resolve(__dirname, '..');
 const platform = process.platform;
 // Support cross-compilation: AIONUI_BACKEND_ARCH > npm_config_target_arch > process.arch
 const arch = process.env.AIONUI_BACKEND_ARCH || process.env.npm_config_target_arch || process.arch;
 const version = resolveAioncoreVersion(projectRoot);
+const repo = resolveAioncoreRepo(projectRoot);
 
 try {
-  prepareAioncore({ projectRoot, platform, arch, version });
+  prepareAioncore({ projectRoot, platform, arch, version, repo });
 } catch (error) {
   console.error('❌ prepareAioncore failed:', error.message);
   process.exit(1);

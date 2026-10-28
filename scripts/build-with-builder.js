@@ -765,7 +765,7 @@ try {
 
   // 5. Prepare aioncore binary (for packaged runtime usage)
   const { prepareAioncore } = require('../packages/shared-scripts/src/prepare-aioncore.js');
-  const { resolveAioncoreVersion } = require('./resolveAioncoreVersion.js');
+  const { resolveAioncoreRepo, resolveAioncoreVersion } = require('./resolveAioncoreVersion.js');
   const projectRoot = path.resolve(__dirname, '..');
   writeGeneratedSentryDsnInclude(projectRoot);
   prepareAioncore({
@@ -773,6 +773,7 @@ try {
     platform: process.platform,
     arch: targetArch,
     version: resolveAioncoreVersion(projectRoot),
+    repo: resolveAioncoreRepo(projectRoot),
   });
 
   // 6. Prepare hub resources (index.json + extension zips for offline fallback)

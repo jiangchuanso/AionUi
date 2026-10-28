@@ -4,7 +4,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { execSync } = require('child_process');
 const { prepareAioncore } = require('../packages/shared-scripts/src/prepare-aioncore.js');
-const { resolveAioncoreVersion } = require('./resolveAioncoreVersion.js');
+const { resolveAioncoreRepo, resolveAioncoreVersion } = require('./resolveAioncoreVersion.js');
 
 const projectRoot = path.resolve(__dirname, '..');
 const platform = process.env.PACK_PLATFORM || process.platform;
@@ -30,6 +30,7 @@ prepareAioncore({
   platform,
   arch,
   version: resolveAioncoreVersion(projectRoot),
+  repo: resolveAioncoreRepo(projectRoot),
 });
 
 // 2. Create staging dir
@@ -85,6 +86,22 @@ if (!fs.existsSync(backendSrc)) {
 }
 fs.mkdirSync(path.dirname(backendDest), { recursive: true });
 fs.cpSync(backendSrc, backendDest, { recursive: true });
+
+// 7b. glibc 2.28 compatibility for Linux targets (CentOS 8 / Rocky 8).
+// If the bun binary or the bundled aioncore require a newer glibc than 2.28,
+// bundle the host glibc and wrap the binaries so they run on glibc 2.28.
+// Best-effort: a failure here only warns and never blocks the build.
+if (platform === 'linux') {
+  const bundleScript = path.join(projectRoot, 'scripts', 'bundle-glibc.sh');
+  try {
+    execSync(`bash "${bundleScript}" "${tarballContentDir}" "${arch}"`, {
+      cwd: projectRoot,
+      stdio: 'inherit',
+    });
+  } catch (err) {
+    console.warn(`glibc bundling step failed (non-fatal): ${err}`);
+  }
+}
 
 // 8. Create tarball
 fs.mkdirSync(distDir, { recursive: true });

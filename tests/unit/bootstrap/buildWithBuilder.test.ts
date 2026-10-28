@@ -303,7 +303,7 @@ Module._load = function patchedLoad(request, parent, isMain) {
   }
 
   if (request === './resolveAioncoreVersion.js' || request.endsWith('/resolveAioncoreVersion.js')) {
-    return { resolveAioncoreVersion: () => 'v-test' };
+    return { resolveAioncoreRepo: () => 'iOfficeAI/AionCore', resolveAioncoreVersion: () => 'v-test' };
   }
 
   return originalLoad.call(this, request, parent, isMain);
