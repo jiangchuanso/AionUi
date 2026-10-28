@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { applyCsrfHeadersToXhr } from '@/common/adapter/csrf';
 import { getBaseUrl } from '@/common/adapter/httpBridge';
 import type { SpeechToTextResult } from '@/common/types/provider/speech';
 
@@ -94,6 +95,10 @@ export async function transcribeAudioBlob(blob: Blob, languageHint?: string): Pr
   return new Promise<SpeechToTextResult>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('POST', `${getBaseUrl()}/api/stt`);
+    // Multipart POST is state-changing: webui identity mode enforces the
+    // double-submit check, so the header must ride along or every transcription
+    // request is answered with `403 CSRF_INVALID`.
+    applyCsrfHeadersToXhr(xhr);
     // No withCredentials: the desktop backend allows origin `*`, which the
     // browser rejects for credentialed requests; WebUI is same-origin anyway.
 

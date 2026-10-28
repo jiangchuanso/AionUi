@@ -1,8 +1,16 @@
-import type { WebHostOptions, WebHostHandle } from './types.js';
+import type { WebHostOptions, WebHostHandle, AdminCliConfig } from './types.js';
 
-export type { AppMetadata, BackendBinaryResolver, WebHostOptions, WebHostHandle } from './types.js';
+export type { AppMetadata, BackendBinaryResolver, WebHostOptions, WebHostHandle, AdminCliConfig } from './types.js';
 export { startStaticServer, stopStaticServer } from './static-server.js';
 export type { StaticServerOptions, StaticServerHandle } from './static-server.js';
+export { handleAdminApiRequest, isAdminApiPath } from './admin-api.js';
+export {
+  SYSTEM_ADMIN_USER_ID,
+  cliFailureToAdminError,
+  parseUserListOutput,
+  runAioncoreUserCli,
+  type AdminUser,
+} from './admin-cli.js';
 
 // Backend launcher exports (M4)
 export {
@@ -30,14 +38,30 @@ export async function startWebHost(opts: WebHostOptions): Promise<WebHostHandle>
 
   // 1. Start backend (M4)
   let backendHandle;
+  // Admin CLI wiring: needed by the /api/auth/admin/* API in static-server.
+  // ownBackend can derive it here; useExistingBackend hosts pass it in opts.
+  let adminCli: AdminCliConfig | undefined;
   if (opts.backend.kind === 'ownBackend') {
+    // Standalone web deployments (web-cli tarball, docker, `bun run webui`)
+    // run in webui identity mode: real login sessions, per-user data
+    // isolation. The desktop app never reaches this branch.
     backendHandle = await startBackend({
       app: opts.app,
       resolveBackend: opts.backend.resolveBackend,
       dataDir: opts.dataDir,
       logDir: opts.logDir,
       dirs: opts.dirs,
+      identity: opts.identity ?? 'webui',
     });
+    adminCli =
+      opts.adminCli ??
+      (opts.dataDir
+        ? {
+            binaryPath: opts.backend.resolveBackend(),
+            dataDir: opts.dataDir,
+            ...(opts.logDir ? { logDir: opts.logDir } : {}),
+          }
+        : undefined);
   } else {
     // useExistingBackend: create a fake handle
     backendHandle = {
@@ -46,6 +70,7 @@ export async function startWebHost(opts: WebHostOptions): Promise<WebHostHandle>
         // no-op: external backend
       },
     };
+    adminCli = opts.adminCli ?? opts.backend.adminCli;
   }
 
   let staticHandle;
@@ -56,6 +81,7 @@ export async function startWebHost(opts: WebHostOptions): Promise<WebHostHandle>
       backendPort: backendHandle.port,
       port: opts.port,
       allowRemote: opts.allowRemote ?? false,
+      ...(adminCli ? { adminCli } : {}),
     });
   } catch (err) {
     // If static-server fails, clean up backend

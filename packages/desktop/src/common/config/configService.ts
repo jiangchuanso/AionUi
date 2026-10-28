@@ -1,3 +1,4 @@
+import { buildStateChangingHeaders } from '../adapter/csrf';
 import type { ConfigKey, ConfigKeyMap } from './configKeys';
 
 type Subscriber = (value: unknown) => void;
@@ -23,6 +24,14 @@ async function fetchJson<T>(method: string, path: string, body?: unknown): Promi
   const headers: Record<string, string> = {};
   if (body !== undefined) {
     headers['Content-Type'] = 'application/json';
+  }
+  // `PUT /api/settings/client` is a state-changing call: in webui identity mode
+  // (standalone web / docker) aioncore's double-submit middleware rejects it
+  // with `403 CSRF_INVALID` unless the `x-csrf-token` header echoes the
+  // `aionui-csrf-token` cookie. This path used to bypass httpRequest and so
+  // never sent it — every theme / language / setting write failed silently.
+  if (method !== 'GET' && method !== 'HEAD') {
+    Object.assign(headers, buildStateChangingHeaders());
   }
   const response = await fetch(url, {
     method,

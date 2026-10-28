@@ -115,11 +115,11 @@ afterEach(() => {
 });
 
 describe('buildSpawnArgs', () => {
-  it('produces all required flags with logDir and local=true', () => {
+  it('produces all required flags with logDir and local identity', () => {
     const args = buildSpawnArgs({
       port: 12345,
       dbPath: '/data/path',
-      local: true,
+      identity: 'local',
       logDir: '/log/dir',
       appVersion: '9.9.9',
       isPackaged: true,
@@ -133,19 +133,42 @@ describe('buildSpawnArgs', () => {
       'info',
       '--app-version',
       '9.9.9',
+      '--local',
       '--managed-resources-mode',
       'bundled',
       '--log-dir',
       '/log/dir',
-      '--local',
     ]);
+  });
+
+  it('defaults to the desktop local identity (--local) when unspecified', () => {
+    const args = buildSpawnArgs({
+      port: 1,
+      dbPath: '/d',
+      appVersion: '0.0.1',
+      isPackaged: false,
+    });
+    expect(args).toContain('--local');
+    expect(args).not.toContain('--identity-mode');
+  });
+
+  it('passes --identity-mode webui without --local for web deployments', () => {
+    const args = buildSpawnArgs({
+      port: 1,
+      dbPath: '/d',
+      identity: 'webui',
+      appVersion: '0.0.1',
+      isPackaged: true,
+    });
+    expect(args).toContain('--identity-mode');
+    expect(args).toContain('webui');
+    expect(args).not.toContain('--local');
   });
 
   it('uses debug log level when not packaged', () => {
     const args = buildSpawnArgs({
       port: 1,
       dbPath: '/d',
-      local: false,
       appVersion: '0.0.1',
       isPackaged: false,
     });
@@ -153,7 +176,7 @@ describe('buildSpawnArgs', () => {
     expect(args).not.toContain('--dump-prompts');
     expect(args).not.toContain('--managed-resources-mode');
     expect(args).not.toContain('--log-dir');
-    expect(args).not.toContain('--local');
+    expect(args).toContain('--local');
   });
 
   it('passes prompt dump flag in development only when AIONUI_DUMP_PROMPTS is enabled', () => {
@@ -163,7 +186,6 @@ describe('buildSpawnArgs', () => {
       const args = buildSpawnArgs({
         port: 1,
         dbPath: '/d',
-        local: false,
         appVersion: '0.0.1',
         isPackaged: false,
       });
@@ -182,7 +204,6 @@ describe('buildSpawnArgs', () => {
       const args = buildSpawnArgs({
         port: 1,
         dbPath: '/d',
-        local: false,
         appVersion: '0.0.1',
         isPackaged: true,
       });
@@ -200,7 +221,6 @@ describe('buildSpawnArgs', () => {
     const args = buildSpawnArgs({
       port: 1,
       dbPath: '/d',
-      local: true,
       appVersion: '0.0.1',
       isPackaged: true,
       recoverCorruptedDatabase: true,
@@ -216,7 +236,6 @@ describe('buildSpawnArgs', () => {
       const args = buildSpawnArgs({
         port: 1,
         dbPath: '/d',
-        local: false,
         appVersion: 'x',
         isPackaged: true,
       });
@@ -387,13 +406,13 @@ describe('BackendLifecycleManager.start (success path)', () => {
       'info',
       '--app-version',
       '1.2.3',
+      '--local',
       '--managed-resources-mode',
       'bundled',
       '--log-dir',
       '/log/dir',
       '--work-dir',
       '/w',
-      '--local',
     ]);
 
     fetchSpy.mockRestore();
@@ -441,13 +460,13 @@ describe('BackendLifecycleManager.start (success path)', () => {
         'info',
         '--app-version',
         '1.2.3',
+        '--local',
         '--managed-resources-mode',
         'bundled',
         '--log-dir',
         '/log/dir',
         '--work-dir',
         '/w',
-        '--local',
       ]);
       const opts = spawnCall[2] as { cwd?: string; env: NodeJS.ProcessEnv };
       expect(opts.cwd).toBe('/w');

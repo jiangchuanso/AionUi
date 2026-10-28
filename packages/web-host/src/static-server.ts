@@ -14,12 +14,19 @@ import http, { type IncomingMessage, type Server, type ServerResponse } from 'no
 import { networkInterfaces } from 'node:os';
 import net, { type Socket } from 'node:net';
 import serveHandler from 'serve-handler';
+import { handleAdminApiRequest } from './admin-api.js';
+import type { AdminCliConfig } from './types.js';
 
 export type StaticServerOptions = {
   staticDir: string;
   backendPort: number;
   port?: number;
   allowRemote?: boolean;
+  /**
+   * Wires the `/api/auth/admin/*` user-management API to the bundled aioncore
+   * CLI. Omit and those routes answer 501 (frontend-only deployments).
+   */
+  adminCli?: AdminCliConfig;
 };
 
 export type StaticServerHandle = {
@@ -53,23 +60,35 @@ const rankLanCandidate = (addr: string): number => {
   return 3;
 };
 
+// Container / hypervisor bridges are non-internal, are almost always RFC 1918,
+// and are NOT reachable from the user's other devices. On a Docker host the
+// classic `docker0` gateway (172.17.0.1) outranks every 10/8 physical NIC, so the
+// startup banner advertised `http://172.17.0.1:3000` — an address only the host
+// itself can reach. They stay last-resort candidates (better than nothing when a
+// machine only has a bridge), but never beat a real NIC.
+const VIRTUAL_INTERFACE_PATTERN =
+  /^(?:docker|br-|veth|virbr|vmnet|vboxnet|cni|flannel|cali|kube|podman|lxcbr|tunl|weave|vxlan)/i;
+
+const isVirtualInterface = (name: string): boolean => VIRTUAL_INTERFACE_PATTERN.test(name);
+
 // Pick the best LAN IPv4 to advertise. Pure over the interface map so it can be
 // unit-tested against real multi-NIC layouts. Iterating and returning the first
 // non-internal hit (the old behavior) picks whatever the OS lists first, which
 // on a multi-NIC box can be a VPN / benchmark adapter rather than the LAN.
 export function pickLanIP(nets: ReturnType<typeof networkInterfaces>): string | null {
-  const candidates: string[] = [];
+  const candidates: Array<{ address: string; score: number }> = [];
   for (const name of Object.keys(nets)) {
+    const virtualPenalty = isVirtualInterface(name) ? 100 : 0;
     for (const iface of nets[name] || []) {
       if (iface.family !== 'IPv4' || iface.internal) continue;
       if (isUnreachableLanRange(iface.address)) continue;
-      candidates.push(iface.address);
+      candidates.push({ address: iface.address, score: virtualPenalty + rankLanCandidate(iface.address) });
     }
   }
   // Stable sort keeps OS interface order among equally-ranked addresses (e.g. a
   // physical NIC listed before a VPN when both are 10/8).
-  candidates.sort((a, b) => rankLanCandidate(a) - rankLanCandidate(b));
-  return candidates[0] ?? null;
+  candidates.sort((a, b) => a.score - b.score);
+  return candidates[0]?.address ?? null;
 }
 
 function getLanIP(): string | null {
@@ -177,6 +196,13 @@ export async function startStaticServer(opts: StaticServerOptions): Promise<Stat
     try {
       if (!req.url || !req.method) {
         res.writeHead(400).end();
+        return;
+      }
+
+      // /api/auth/admin/* — local user management, served by web-host itself
+      // (aioncore gates its own user endpoints to local mode). Must be checked
+      // before the generic /api/* proxy below.
+      if (await handleAdminApiRequest(req, res, { backendPort: opts.backendPort, adminCli: opts.adminCli })) {
         return;
       }
 

@@ -10,6 +10,7 @@ AionUi supports WebUI mode, allowing you to access the application through a web
 - [Linux](#linux)
 - [Android (Termux)](#android-termux)
 - [Remote Access](#remote-access)
+- [User Management & Data Isolation](#user-management--data-isolation)
 - [Troubleshooting](#troubleshooting)
 
 ---
@@ -599,6 +600,56 @@ Settings from CLI flags take priority, followed by environment variables, then t
 | `--webui`          | Start in WebUI mode         |
 | `--remote`         | Allow remote network access |
 | `--webui --remote` | Combine both flags          |
+
+---
+
+## User Management & Data Isolation
+
+Standalone web deployments (`aionui-web start`, the Docker image, and `bun run
+webui`) run the backend in **webui identity mode**: every request is
+authenticated against a local account, and each account's conversations,
+projects, providers and settings are isolated from the others. No aionui.com
+account is involved — everything is local to your deployment.
+
+### First sign-in
+
+On a fresh install the server seeds an `admin` account with a random password
+and prints it to the log:
+
+```
+[aionui-web] Generated initial admin password: <random>
+[aionui-web] Log in with username "admin" and change it from the UI.
+```
+
+Docker: `docker logs aionui 2>&1 | grep "Generated initial admin password"`.
+
+### Managing accounts
+
+Open **Settings → Users** (visible in browser mode, admin account only):
+
+- **Change my password** — available to every signed-in account; requires the
+  current password and signs out all existing sessions afterwards.
+- **Create user** — adds a local account (username + initial password). New
+  accounts start with an empty workspace and see only their own data.
+- **Reset password** — sets another account's password without knowing the old
+  one.
+- **Disable / Enable** — blocks or restores sign-in for an account. Disabling
+  also revokes that account's live sessions.
+
+The `admin` account cannot be disabled or renamed from the UI.
+
+### Resetting a password from the shell
+
+```bash
+# Packaged tarball / docker
+aionui-web resetpass
+docker exec -it aionui /app/aionui-web/aionui-web resetpass
+
+# Desktop Electron app
+AionUi.exe --resetpass
+```
+
+The command prints a new random password; existing sessions are invalidated.
 
 ---
 

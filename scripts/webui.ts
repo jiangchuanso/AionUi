@@ -20,11 +20,12 @@
  */
 
 import { execSync } from 'child_process';
+import { randomBytes } from 'crypto';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { startWebHost } from '@aionui/web-host';
+import { runAioncoreUserCli, startWebHost } from '@aionui/web-host';
 import { openBrowserUrl, shouldAutoOpenBrowser } from '../packages/web-cli/src/browser.js';
 
 // Aligned with packages/desktop/src/common/config/constants.ts WEBUI_DEFAULT_PORT.
@@ -266,19 +267,27 @@ async function main(): Promise<void> {
     if (statusRes.ok) {
       const status = (await statusRes.json()) as { needs_setup?: boolean };
       if (status.needs_setup === true) {
-        const resetRes = await fetch(`http://127.0.0.1:${handle.backendPort}/api/webui/reset-password`, {
-          method: 'POST',
-        });
-        if (resetRes.ok) {
-          const payload = (await resetRes.json()) as { data?: { new_password?: string } };
-          const initialPassword = payload.data?.new_password;
-          if (initialPassword) {
-            const adminUsername = await fetchAdminUsername(handle.backendPort);
-            console.log('');
-            console.log(`Initial admin username: ${adminUsername}`);
-            console.log(`Initial admin password: ${initialPassword}`);
-            console.log('(change them after first login)');
-          }
+        // WebUI identity mode: aioncore's /api/webui/* endpoints are gated to
+        // local mode and answer 403 here, so seed through the bundled CLI —
+        // same path web-cli's ensureAdminPassword uses in docker.
+        const initialPassword = randomBytes(18)
+          .toString('base64url')
+          .replace(/[O0Il]/g, 'x')
+          .slice(0, 24);
+        const result = await runAioncoreUserCli(
+          { binaryPath: backendBin, dataDir: workDir, ...(logDir ? { logDir } : {}) },
+          ['set-password', '--password-stdin'],
+          initialPassword
+        );
+        if (result.ok) {
+          const adminUsername = await fetchAdminUsername(handle.backendPort);
+          console.log('');
+          console.log(`Initial admin username: ${adminUsername}`);
+          console.log(`Initial admin password: ${initialPassword}`);
+          console.log('(change them after first login)');
+        } else {
+          console.warn(`[webui] failed to seed the initial admin password: ${result.stderr.trim()}`);
+          console.warn('[webui] run `bun run resetpass` to generate one.');
         }
       } else {
         // Credentials already exist; just remind the user what username to use.

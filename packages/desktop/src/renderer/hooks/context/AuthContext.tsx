@@ -1,11 +1,19 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { PREVIEW_SCOPE_KEY_PREFIX } from '@/renderer/pages/conversation/Preview/context/previewScope';
 import { refreshSession } from '@/common/adapter/sessionRefresh';
-// M6: CSRF removed with legacy webserver — stub functions for compatibility, re-implement in M7
-const withCsrfToken = <T extends Record<string, unknown>>(data: T): T => data;
-const hasValidCsrfToken = (): boolean => true;
-const clearCookie = (_name: string, _path?: string): void => {};
-const CSRF_COOKIE_NAME = 'csrf-token';
+import { CORE_CSRF_HEADER, resolveCoreCsrfToken } from '@/common/adapter/httpBridge';
+
+/** Cookie the backend's CSRF middleware sets; mirrors aionui-auth csrf.rs. */
+const CSRF_COOKIE_NAME = 'aionui-csrf-token';
+
+/** True when the double-submit cookie is present (browser mode only). */
+const hasValidCsrfToken = (): boolean => resolveCoreCsrfToken().length > 0;
+
+function clearCookie(name: string, path?: string): void {
+  if (typeof document === 'undefined') return;
+  const suffix = path ? `; path=${path}` : '';
+  document.cookie = `${name}=; expires=Thu, 01 Jan 1970 00:00:00 GMT${suffix}`;
+}
 
 type AuthStatus = 'checking' | 'authenticated' | 'unauthenticated';
 
@@ -133,6 +141,11 @@ export const AuthProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
   const [status, setStatus] = useState<AuthStatus>('checking');
   const [ready, setReady] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  // Monotonic id so a superseded (aborted) refresh can't clobber the state a
+  // newer refresh already applied. Without this, the old call resumes with
+  // `null` after abort and flips an authenticated session to unauthenticated,
+  // kicking the user to /login (the very regression #4124 fixed).
+  const refreshSeqRef = useRef(0);
 
   const refresh = useCallback(async () => {
     if (isDesktopRuntime) {
@@ -145,9 +158,14 @@ export const AuthProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
+    const seq = ++refreshSeqRef.current;
     setStatus('checking');
 
     const currentUser = await fetchCurrentUser(controller.signal);
+    if (seq !== refreshSeqRef.current) {
+      // A newer refresh started while this one was in flight — drop this result.
+      return;
+    }
     if (currentUser) {
       setUser(currentUser);
       setStatus('authenticated');
@@ -183,13 +201,18 @@ export const AuthProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
 
       // P1 安全修复：登录请求需要 CSRF Token / P1 Security fix: Login needs CSRF token
       // Backend route is /login; web-host's static-server explicitly proxies it.
+      // The token rides the x-csrf-token header (double-submit against the
+      // aionui-csrf-token cookie the backend already set) — /login itself is
+      // CSRF-exempt upstream, but the header keeps the shape uniform.
+      const csrfToken = resolveCoreCsrfToken();
       const response = await fetch('/login', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          ...(csrfToken ? { [CORE_CSRF_HEADER]: csrfToken } : {}),
         },
         credentials: 'include',
-        body: JSON.stringify(withCsrfToken({ username, password, remember })),
+        body: JSON.stringify({ username, password, remember }),
       });
 
       const data = (await response.json()) as {
@@ -277,14 +300,17 @@ export const AuthProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
     }
 
     try {
+      // Logout is not CSRF-exempt upstream — the double-submit header is
+      // required in webui identity mode.
+      const csrfToken = resolveCoreCsrfToken();
       await fetch('/logout', {
         method: 'POST',
-        // Logout also needs CSRF token / 登出同样需要 CSRF Token
         headers: {
           'Content-Type': 'application/json',
+          ...(csrfToken ? { [CORE_CSRF_HEADER]: csrfToken } : {}),
         },
         credentials: 'include',
-        body: JSON.stringify(withCsrfToken({})),
+        body: JSON.stringify({}),
       });
     } catch (error) {
       console.error('Logout request failed:', error);

@@ -17,6 +17,7 @@ import {
   Info,
   Lightning,
   LinkCloud,
+  Peoples,
   Puzzle,
   Robot,
   System,
@@ -77,6 +78,12 @@ export function getBuiltinSettingsNavItems(isDesktop: boolean, t: TranslateFn): 
       icon: isDesktop ? <Earth theme='outline' size='16' /> : <Communication theme='outline' size='16' />,
       path: 'webui',
     },
+    users: {
+      id: 'users',
+      label: t('settings.users.navLabel', { defaultValue: 'Users' }),
+      icon: <Peoples theme='outline' size='16' />,
+      path: 'users',
+    },
     pet: { id: 'pet', label: t('pet.desktopPet'), icon: <Cat theme='outline' size='16' />, path: 'pet' },
     system: { id: 'system', label: t('settings.system'), icon: <System theme='outline' size='16' />, path: 'system' },
     archived: {
@@ -88,7 +95,12 @@ export function getBuiltinSettingsNavItems(isDesktop: boolean, t: TranslateFn): 
     about: { id: 'about', label: t('settings.about'), icon: <Info theme='outline' size='16' />, path: 'about' },
   };
 
-  return BUILTIN_TAB_IDS.map((id) => builtinMap[id]);
+  return BUILTIN_TAB_IDS.filter((id) => {
+    // Local identity mode (desktop) has a single implicit user — no user
+    // management UI there. Browser deployments always have real sessions.
+    if (id === 'users') return !isDesktop;
+    return true;
+  }).map((id) => builtinMap[id]);
 }
 
 const SettingsPageWrapper: React.FC<SettingsPageWrapperProps> = ({ children, className, contentClassName }) => {

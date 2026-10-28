@@ -12,6 +12,7 @@ import {
   Info,
   Lightning,
   LinkCloud,
+  Peoples,
   Puzzle,
   Speed,
   System,
@@ -32,6 +33,7 @@ export const BUILTIN_TAB_IDS = [
   'tools',
   'appearance',
   'webui',
+  'users',
   'pet',
   'system',
   'archived',
@@ -111,6 +113,12 @@ const SettingsSider: React.FC<{ collapsed?: boolean; tooltipEnabled?: boolean }>
         icon: isDesktop ? <Earth /> : <Communication />,
         path: 'webui',
       },
+      users: {
+        id: 'users',
+        label: t('settings.users.navLabel', { defaultValue: 'Users' }),
+        icon: <Peoples />,
+        path: 'users',
+      },
       pet: { id: 'pet', label: t('pet.desktopPet'), icon: <Cat />, path: 'pet' },
       system: { id: 'system', label: t('settings.system'), icon: <System />, path: 'system' },
       archived: {
@@ -123,7 +131,12 @@ const SettingsSider: React.FC<{ collapsed?: boolean; tooltipEnabled?: boolean }>
     };
 
     // Start with ordered builtin IDs, hiding desktop-only tabs in browser mode
-    const result: SiderItem[] = BUILTIN_TAB_IDS.filter((id) => isDesktop || id !== 'pet').map((id) => builtinMap[id]);
+    // and the browser-only users tab on desktop (local mode has one implicit user).
+    const result: SiderItem[] = BUILTIN_TAB_IDS.filter((id) => {
+      if (id === 'pet') return isDesktop;
+      if (id === 'users') return !isDesktop;
+      return true;
+    }).map((id) => builtinMap[id]);
 
     // Extension tabs with position anchoring
     const beforeMap = new Map<string, IExtensionSettingsTab[]>();

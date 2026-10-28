@@ -88,4 +88,32 @@ describe('pickLanIP', () => {
     };
     expect(pickLanIP(nets)).toBe('203.0.113.7');
   });
+
+  it('never advertises a Docker bridge over a real NIC on the same host', () => {
+    // The reported bug: on a Docker host the classic docker0 gateway (172.17.0.1)
+    // ranked above the physical 10/8 NIC, so the startup banner pointed at an
+    // address only the host itself can reach.
+    const nets: Nets = {
+      docker0: [iface('172.17.0.1')],
+      eth0: [iface('10.8.3.21')],
+    };
+    expect(pickLanIP(nets)).toBe('10.8.3.21');
+  });
+
+  it('ranks container / VM bridge interfaces last', () => {
+    const nets: Nets = {
+      'br-1a2b3c4d5e6f': [iface('172.18.0.1')],
+      virbr0: [iface('192.168.122.1')],
+      veth1234: [iface('10.99.0.5')],
+      wlan0: [iface('10.0.0.42')],
+    };
+    expect(pickLanIP(nets)).toBe('10.0.0.42');
+  });
+
+  it('still falls back to a bridge address when it is the only interface', () => {
+    const nets: Nets = {
+      docker0: [iface('172.17.0.1')],
+    };
+    expect(pickLanIP(nets)).toBe('172.17.0.1');
+  });
 });

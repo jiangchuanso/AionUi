@@ -32,7 +32,7 @@
  * `browser.ts` can share it without bootstrapping each other's WebSocket.
  */
 
-import { resolveCoreCsrfToken } from './httpBridge';
+import { buildStateChangingHeaders } from './csrf';
 
 /** WebSocket close code the backend uses for auth policy violations (RFC 6455 §7.4.1). */
 export const WS_CLOSE_POLICY_VIOLATION = 1008;
@@ -79,23 +79,27 @@ export function refreshSession(): Promise<boolean> {
 
 async function performRefresh(): Promise<boolean> {
   try {
-    // Attach the CSRF double-submit header when a token is available. The
-    // open-source WebUI has no CSRF layer yet (M6 removed it, M7 restores it), so
-    // resolveCoreCsrfToken() returns '' and no header is sent; the aionpro superset
-    // resolves a real token here and its backend enforces the check. The matching
-    // cookie, when one exists, rides `credentials: 'include'`.
-    const headers: Record<string, string> = {};
-    const csrfToken = resolveCoreCsrfToken();
-    if (csrfToken) {
-      headers['x-csrf-token'] = csrfToken;
-    }
+    // Attach the CSRF double-submit header when a token is available. Standalone
+    // web / docker deployments run the backend in webui identity mode, where the
+    // CSRF middleware enforces the check on POST /api/auth/refresh too; the
+    // desktop app's local-mode backend has no CSRF layer and no cookie, so the
+    // header is simply omitted. The matching cookie, when one exists, rides
+    // `credentials: 'include'`.
+    //
+    // The backend's refresh handler extracts its payload with a JSON body
+    // extractor, so a bodyless POST is answered with `415 Unsupported Media
+    // Type` and the session dies on the first access-cookie expiry (users got
+    // kicked to /login every few minutes, losing the in-flight stream). The
+    // refresh token itself still travels in the HttpOnly cookie; the empty
+    // object only satisfies the extractor.
+    const headers = buildStateChangingHeaders({ 'Content-Type': 'application/json' });
     const response = await fetch(REFRESH_ENDPOINT, {
       method: 'POST',
       // Same-origin request: the browser attaches the HttpOnly refresh cookie
-      // (scoped to Path=/api/auth/refresh). No body is needed — the backend reads
-      // the cookie and only falls back to a body token for legacy native clients.
+      // (scoped to Path=/api/auth/refresh).
       credentials: 'include',
       headers,
+      body: JSON.stringify({}),
     });
     return response.ok;
   } catch {

@@ -4,11 +4,57 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { applyCsrfHeadersToXhr, isCsrfRejection } from '@/common/adapter/csrf';
 import { getBaseUrl } from '@/common/adapter/httpBridge';
 import { trackUpload, type UploadSource } from '@/renderer/hooks/file/useUploadState';
 
 /** Sentinel error message used when an upload is cancelled by the caller. */
 export const UPLOAD_ABORTED_ERROR = 'Upload aborted';
+
+/** Sentinel error message used when the backend refuses the upload over CSRF. */
+export const UPLOAD_CSRF_ERROR = 'UPLOAD_CSRF_REJECTED';
+
+/**
+ * Turn a non-2xx upload response into the most specific error we can.
+ *
+ * The multipart endpoint is state-changing, so in webui identity mode a missing
+ * or stale CSRF token is answered with `403 {"code":"CSRF_INVALID"}`. Reporting
+ * that as a bare "403 Forbidden" hides the only actionable fact (reload the page
+ * to fetch a fresh token), so it gets its own sentinel.
+ */
+function toUploadError(xhr: XMLHttpRequest): Error {
+  let body: unknown;
+  try {
+    body = JSON.parse(xhr.responseText) as unknown;
+  } catch {
+    body = xhr.responseText;
+  }
+  if (isCsrfRejection(xhr.status, body)) {
+    return new Error(UPLOAD_CSRF_ERROR);
+  }
+  return new Error(`Upload failed: ${xhr.status} ${xhr.statusText}`);
+}
+
+/**
+ * Thrown by `processDroppedFiles` when one or more uploads fail (network / HTTP
+ * error). It carries the files that *did* upload successfully so callers can
+ * still attach them, plus the failed list so the UI can surface a message.
+ *
+ * Previously every non-size error was swallowed (`continue`), which left the UI
+ * with no feedback at all when an upload failed in WebUI / Docker.
+ */
+export class UploadFailedError extends Error {
+  readonly processed: FileMetadata[];
+  readonly failed: { name: string; message: string }[];
+
+  constructor(processed: FileMetadata[], failed: { name: string; message: string }[]) {
+    const names = failed.map((f) => f.name).join('、');
+    super(`Upload failed for ${failed.length} file(s): ${names}`);
+    this.name = 'UploadFailedError';
+    this.processed = processed;
+    this.failed = failed;
+  }
+}
 
 export interface UploadFileOptions {
   /** Cancel the upload from the outside. Closing the XHR also frees the backend connection. */
@@ -48,6 +94,10 @@ export async function uploadFileViaHttp(
   return new Promise<string>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('POST', `${getBaseUrl()}/api/fs/upload`);
+    // Multipart upload is state-changing: in webui identity mode aioncore's
+    // double-submit middleware rejects it without the `x-csrf-token` header
+    // (`403 CSRF_INVALID`), which made every WebUI / docker upload fail.
+    applyCsrfHeadersToXhr(xhr);
 
     // Wire AbortSignal → xhr.abort. Closing the XHR tears down the underlying
     // socket; the backend (axum/multer) treats the truncated multipart body as
@@ -92,7 +142,7 @@ export async function uploadFileViaHttp(
         return;
       }
       if (xhr.status < 200 || xhr.status >= 300) {
-        reject(new Error(`Upload failed: ${xhr.status} ${xhr.statusText}`));
+        reject(toUploadError(xhr));
         return;
       }
       try {
@@ -317,6 +367,7 @@ class FileServiceClass {
     source: UploadSource = 'sendbox'
   ): Promise<FileMetadata[]> {
     const processedFiles: FileMetadata[] = [];
+    const failed: { name: string; message: string }[] = [];
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
@@ -346,6 +397,10 @@ class FileServiceClass {
           continue;
         }
         console.error('Failed to upload file:', error);
+        failed.push({
+          name: file.name,
+          message: error instanceof Error ? error.message : String(error),
+        });
         continue;
       } finally {
         tracker.finish();
@@ -358,6 +413,13 @@ class FileServiceClass {
         type: file.type,
         lastModified: file.lastModified,
       });
+    }
+
+    // Surface failures instead of swallowing them. Carrying `processed` lets the
+    // caller still attach the files that succeeded while informing the user about
+    // the ones that did not (e.g. network error / 5xx in WebUI / Docker).
+    if (failed.length > 0) {
+      throw new UploadFailedError(processedFiles, failed);
     }
 
     return processedFiles;

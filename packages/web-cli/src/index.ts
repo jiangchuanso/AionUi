@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openBrowserUrl, shouldAutoOpenBrowser } from './browser.js';
-import { ensureAdminPassword } from './ensureAdminPassword.js';
+import { ensureAdminPassword, generateInitialPassword, setAdminPasswordViaCli } from './ensureAdminPassword.js';
 
 // tarball layout:
 //   aionui-web/
@@ -20,6 +20,15 @@ import { ensureAdminPassword } from './ensureAdminPassword.js';
 // sibling files. In dev (tsx/node), process.execPath is the node/bun binary,
 // so fall back to import.meta.url there.
 function resolveCliRoot(): string {
+  // When the binary is launched through a wrapper that bundles a newer glibc
+  // (see scripts/bundle-glibc.sh), /proc/self/exe — and therefore
+  // process.execPath — points at the dynamic loader, NOT at aionui-web. The
+  // wrapper exports AIONUI_WEB_ROOT so we can still find static/ and
+  // bundled-aioncore/ next to the tarball root.
+  const envRoot = process.env.AIONUI_WEB_ROOT;
+  if (envRoot) {
+    return path.resolve(envRoot);
+  }
   // Heuristic: if the executable path ends in "aionui-web" or "aionui-web.exe",
   // treat it as the packaged single-file binary and return its directory.
   const exe = process.execPath;
@@ -45,6 +54,12 @@ const cliRoot = resolveCliRoot();
 // which does it for them. Until we sign + notarize, there is nothing the
 // binary itself can do about first-launch quarantine.
 const isPackaged = (() => {
+  // Set by the glibc-bundling wrapper (scripts/bundle-glibc.sh): the binary runs
+  // under an explicit dynamic loader, so process.execPath is the loader, not
+  // aionui-web — but it is still a packaged release tarball.
+  if (process.env.AIONUI_WEB_ROOT) {
+    return true;
+  }
   const exeName = path.basename(process.execPath).toLowerCase();
   return exeName === 'aionui-web' || exeName === 'aionui-web.exe';
 })();
@@ -61,6 +76,14 @@ function parseArgs(argv: string[]): { command: string; flags: Map<string, string
   for (let i = 0; i < rest.length; i++) {
     const token = rest[i];
     if (!token.startsWith('--')) continue;
+    // Support both `--port 3000` and `--port=3000`. Without the `=` form
+    // `--remote=0.0.0.0` was stored under the literal key "remote=0.0.0.0", so
+    // `--remote` looked absent and the server silently stayed loopback-only.
+    const eq = token.indexOf('=');
+    if (eq > 2) {
+      flags.set(token.slice(2, eq), token.slice(eq + 1));
+      continue;
+    }
     const name = token.slice(2);
     const next = rest[i + 1];
     if (next && !next.startsWith('--')) {
@@ -118,6 +141,28 @@ function resolveAllowRemote(flags: Map<string, string | true>): boolean {
   const env = process.env.AIONUI_ALLOW_REMOTE ?? process.env.AIONUI_REMOTE;
   if (!env) return false;
   return ['1', 'true', 'yes', 'on'].includes(env.trim().toLowerCase());
+}
+
+/**
+ * Print the "how do I reach this from another device" lines.
+ *
+ * `networkUrl` is the best LAN IPv4 web-host could detect. Two cases used to be
+ * confusing in production:
+ *  - `--remote 0.0.0.0` printed no hint about the bind address at all, so it
+ *    looked like the flag had no effect;
+ *  - the detected IP could be a container bridge (e.g. docker0 `172.17.0.1`),
+ *    which is unreachable from other machines.
+ * Printing the bind address plus an explicit fallback keeps the banner honest.
+ */
+function logNetworkHint(networkUrl: string | undefined, allowRemote: boolean, port: number): void {
+  if (networkUrl) {
+    console.log(`  Network: ${networkUrl}`);
+  } else if (allowRemote) {
+    console.log(`  Network: unavailable — no LAN IPv4 detected; use http://<host-ip>:${port}`);
+  }
+  if (allowRemote) {
+    console.log(`  Bind   : 0.0.0.0:${port} (accepting remote connections)`);
+  }
 }
 
 function readPackageVersion(): string {
@@ -184,7 +229,7 @@ async function runStart(flags: Map<string, string | true>): Promise<void> {
     console.log('');
     console.log('AionUi WebUI (frontend only) is ready');
     console.log(`  Local  : ${handle.localUrl}`);
-    if (handle.networkUrl) console.log(`  Network: ${handle.networkUrl}`);
+    logNetworkHint(handle.networkUrl, allowRemote, handle.port);
     if (autoOpenBrowser) {
       const openResult = openBrowserUrl(handle.localUrl);
       if (openResult.ok) {
@@ -224,13 +269,15 @@ async function runStart(flags: Map<string, string | true>): Promise<void> {
     console.log('');
     console.log('AionUi WebUI is ready');
     console.log(`  Local  : ${handle.localUrl}`);
-    if (handle.networkUrl) console.log(`  Network: ${handle.networkUrl}`);
+    logNetworkHint(handle.networkUrl, allowRemote, handle.port);
 
-    // First-launch bootstrap: if SQLite has no admin password yet, seed one via
-    // backend and print plaintext credentials. Failure must not abort startup —
-    // the user can always fall back to running resetpass manually.
+    // First-launch bootstrap: if SQLite has no admin password yet, seed one and
+    // print plaintext credentials. Failure must not abort startup — the user can
+    // always fall back to running resetpass manually.
+    // The backend runs in webui identity mode here, so the HTTP reset endpoint
+    // is local-mode-gated (403); the CLI path does the actual seeding.
     await ensureAdminPassword(
-      { backendPort: handle.backendPort, resetCommand: RESET_COMMAND },
+      { backendPort: handle.backendPort, resetCommand: RESET_COMMAND, cli: { binaryPath: backendBin, dataDir } },
       {
         fetch: (...args) => fetch(...args),
         log: (msg) => console.log(msg),
@@ -270,10 +317,14 @@ async function runStart(flags: Map<string, string | true>): Promise<void> {
 }
 
 /**
- * `aionui-web resetpass` — spin up the backend just long enough to POST
- * /api/webui/reset-password, print the new plaintext password, then tear down.
- * Uses the same data-dir resolution as `start`, so the reset targets whichever
- * DB the user normally runs against.
+ * `aionui-web resetpass` — set a new admin password and print it.
+ *
+ * Uses the aioncore `user set-password` CLI directly against the data dir:
+ * it works in every identity mode (the HTTP /api/webui/reset-password
+ * endpoint is local-mode-gated and standalone web runs webui mode), needs no
+ * server, and shares the exact validate + bcrypt logic with the running
+ * backend. Same data-dir resolution as `start`, so it targets whichever DB
+ * the user normally runs against.
  */
 async function runResetPassword(flags: Map<string, string | true>): Promise<void> {
   const backendBin = resolveBackendBinary(flags);
@@ -285,82 +336,21 @@ async function runResetPassword(flags: Map<string, string | true>): Promise<void
   const dataDir = resolveDataDir(flags);
   fs.mkdirSync(dataDir, { recursive: true });
   const logDir = resolveLogDir(flags, dataDir);
-  fs.mkdirSync(logDir, { recursive: true });
-  const staticDir = resolveStaticDir(flags);
-  const version = readPackageVersion();
 
   console.log(`[aionui-web] resetting admin password in ${dataDir}`);
 
-  const handle = await startWebHost({
-    app: {
-      version,
-      isPackaged: true,
-      resourcesPath: cliRoot,
-      userDataPath: dataDir,
-    },
-    // resetpass only needs the backend up; serve static anyway so the web-host
-    // does not choke on a missing staticDir.
-    staticDir,
-    // Use an ephemeral port (0) so a concurrent running instance does not clash.
-    port: 0,
-    allowRemote: false,
-    dataDir,
-    logDir,
-    dirs: { cacheDir: dataDir, workDir: dataDir, logDir },
-    backend: { kind: 'ownBackend', resolveBackend: () => backendBin },
-  });
-  currentHandle = handle;
-
-  try {
-    // Wait for backend to finish migrating + seeding before we hit the endpoint.
-    const deadline = Date.now() + 15_000;
-    let ready = false;
-    while (Date.now() < deadline) {
-      try {
-        const res = await fetch(`http://127.0.0.1:${handle.backendPort}/api/auth/status`);
-        if (res.ok) {
-          ready = true;
-          break;
-        }
-      } catch {
-        /* backend still booting */
-      }
-      await delay(500);
-    }
-    if (!ready) {
-      console.error('[aionui-web] backend did not become ready within 15s');
-      process.exit(1);
-    }
-
-    const res = await fetch(`http://127.0.0.1:${handle.backendPort}/api/webui/reset-password`, {
-      method: 'POST',
-    });
-    if (!res.ok) {
-      console.error(`[aionui-web] /api/webui/reset-password returned ${res.status}`);
-      process.exit(1);
-    }
-    const payload = (await res.json()) as {
-      data?: { new_password?: string; username?: string };
-      new_password?: string;
-      username?: string;
-    };
-    const newPassword = payload.data?.new_password ?? payload.new_password;
-    const username = payload.data?.username ?? payload.username ?? 'admin';
-    if (!newPassword) {
-      console.error('[aionui-web] reset-password response missing new_password');
-      process.exit(1);
-    }
-    console.log(`[aionui-web] username: ${username}`);
-    console.log(`[aionui-web] new password: ${newPassword}`);
-    console.log('[aionui-web] existing sessions have been invalidated.');
-  } finally {
-    try {
-      await handle.stop();
-    } catch {
-      /* best-effort shutdown */
-    }
-    currentHandle = null;
+  const newPassword = generateInitialPassword();
+  const ok = await setAdminPasswordViaCli({ binaryPath: backendBin, dataDir, logDir }, newPassword);
+  if (!ok) {
+    console.error('[aionui-web] aioncore user set-password failed (see stderr above)');
+    process.exit(1);
   }
+  console.log('[aionui-web] username: admin');
+  console.log(`[aionui-web] new password: ${newPassword}`);
+  // Upstream's set_local_password deliberately does NOT bump session_generation,
+  // so already-signed-in sessions keep working until they expire. Say so rather
+  // than promising a revocation we don't perform.
+  console.log('[aionui-web] note: live sessions are not revoked — restart the server to force re-login.');
 }
 
 async function main(): Promise<void> {

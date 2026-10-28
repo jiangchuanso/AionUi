@@ -24,11 +24,12 @@
  */
 
 import { execSync } from 'child_process';
+import { randomBytes } from 'crypto';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { startBackend, stopBackend } from '@aionui/web-host';
+import { runAioncoreUserCli } from '@aionui/web-host';
 
 const BACKEND_BINARY = process.platform === 'win32' ? 'aioncore.exe' : 'aioncore';
 
@@ -133,18 +134,6 @@ async function detectRunningWebUI(port: number): Promise<boolean> {
   }
 }
 
-async function resetPasswordVia(url: string): Promise<string> {
-  const res = await fetch(url, { method: 'POST' });
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`reset-password failed (${res.status}): ${body}`);
-  }
-  const payload = (await res.json()) as { data?: { new_password?: string } };
-  const newPassword = payload.data?.new_password;
-  if (!newPassword) throw new Error('reset-password returned no new_password');
-  return newPassword;
-}
-
 // Skip flag values (e.g. `--data-dir /some/path`) so they don't get picked up
 // as the username positional argument.
 const FLAGS_WITH_VALUES = new Set(['--data-dir', '--port']);
@@ -164,74 +153,57 @@ function resolveUsername(): string {
 }
 
 async function main(): Promise<void> {
-  const username = resolveUsername();
   const workDir = resolveWorkDir();
-  const webuiPort = resolveWebUIProbePort();
-
-  log.info(`Target user: ${username} (advisory — operates on system_default_user)`);
-  log.info(`Work dir   : ${workDir}`);
-
-  // Fast path: a `bun run webui` is already up. Go through its proxy so the
-  // running server immediately sees the new password — no need for the user
-  // to stop the server or deal with two backends fighting over the same db.
-  if (await detectRunningWebUI(webuiPort)) {
-    log.info(`Detected running WebUI at http://127.0.0.1:${webuiPort} — reusing it`);
-    try {
-      const newPassword = await resetPasswordVia(`http://127.0.0.1:${webuiPort}/api/webui/reset-password`);
-      log.success('Password reset successfully.');
-      log.info('New password:');
-      log.highlight(newPassword);
-      log.info('');
-      log.warning('Please change this password after next login.');
-      return;
-    } catch (error) {
-      log.error(error instanceof Error ? error.message : 'Password reset failed');
-      process.exitCode = 1;
-      return;
-    }
-  }
-
-  // Slow path: no webui running. Spawn a short-lived backend against the same
-  // data-dir, reset, stop.
   const logDir = process.env.AIONUI_LOG_DIR ?? path.join(workDir, 'logs');
   fs.mkdirSync(logDir, { recursive: true });
 
+  // A positional username is accepted for muscle memory but intentionally
+  // ignored: the CLI's `set-password` without --username targets the seeded
+  // system_default_user, which is what "the admin account" means here. Passing
+  // an explicit username would UPSERT that name and could silently create a
+  // second account instead of resetting the real admin.
+  const username = resolveUsername();
+  log.info(`Target user: ${username} (advisory — operates on system_default_user)`);
+  log.info(`Work dir   : ${workDir}`);
+
+  // The backend's /api/webui/reset-password is gated to local mode inside
+  // aioncore and answers 403 in webui identity mode (what `bun run webui`,
+  // `aionui-web start` and docker all use). Go through the bundled CLI
+  // instead: it opens the same SQLite directly and needs no running server.
   const backendBin = resolveBackendBinary();
-  log.info(`No running WebUI on port ${webuiPort} — starting short-lived backend`);
-  log.info(`Backend bin: ${backendBin}`);
+  const newPassword = randomBytes(18)
+    .toString('base64url')
+    .replace(/[O0Il]/g, 'x')
+    .slice(0, 24);
 
-  const handle = await startBackend({
-    app: {
-      version: '0.0.0',
-      isPackaged: false,
-      resourcesPath: repoRoot,
-      userDataPath: workDir,
-    },
-    resolveBackend: () => backendBin,
-    dataDir: workDir,
-    logDir,
-    dirs: {
-      cacheDir: workDir,
-      workDir,
-      logDir,
-    },
-  });
-
+  let running = false;
   try {
-    const newPassword = await resetPasswordVia(`http://127.0.0.1:${handle.port}/api/webui/reset-password`);
-    log.success('Password reset successfully.');
-    log.info('New password:');
-    log.highlight(newPassword);
-    log.info('');
-    log.warning('Please change this password after next login.');
-  } catch (error) {
-    log.error(error instanceof Error ? error.message : 'Password reset failed');
-    process.exitCode = 1;
-  } finally {
-    await stopBackend(handle).catch((err) => {
-      log.warning(`backend stop failed: ${err instanceof Error ? err.message : String(err)}`);
-    });
+    running = await detectRunningWebUI(resolveWebUIProbePort());
+  } catch {
+    running = false;
   }
+  log.info(running ? 'A WebUI is running; the new password applies immediately.' : 'No running WebUI detected.');
+
+  const result = await runAioncoreUserCli(
+    { binaryPath: backendBin, dataDir: workDir, logDir },
+    ['set-password', '--password-stdin'],
+    newPassword
+  );
+
+  if (!result.ok) {
+    log.error(`Password reset failed: ${result.stderr.trim() || 'aioncore user set-password exited non-zero'}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  log.success('Password reset successfully.');
+  log.info('New password:');
+  log.highlight(newPassword);
+  log.info('');
+  log.warning('Please change this password after next login.');
+  // Upstream's set_local_password deliberately does not bump session_generation,
+  // so already-signed-in sessions keep working until they expire.
+  log.info('Note: live sessions are NOT revoked — restart the server to force everyone to sign in again.');
 }
 
 void main();

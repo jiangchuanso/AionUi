@@ -12,7 +12,7 @@ import { type ChildProcess, spawn } from 'node:child_process';
 import { mkdirSync, statSync } from 'node:fs';
 import { connect, createServer, type Socket } from 'node:net';
 import { cleanupRegisteredAgentProcesses } from './agent-process-registry.js';
-import type { AppMetadata, BackendBinaryResolver } from './types.js';
+import type { AppMetadata, BackendBinaryResolver, BackendIdentityMode } from './types.js';
 
 type BackendStatus = 'stopped' | 'starting' | 'running' | 'error';
 type BackendStartupStage =
@@ -64,7 +64,14 @@ type ParsedBackendBoundaryError = {
 type SpawnConfig = {
   port: number;
   dbPath: string;
-  local: boolean;
+  /**
+   * Which aioncore identity mode to launch in. `'local'` (default) passes
+   * `--local` — single embedded user, no authentication; this is what the
+   * desktop app has always used. `'webui'` passes `--identity-mode webui`
+   * instead — real per-user sessions, so standalone web / docker deployments
+   * get per-account data isolation.
+   */
+  identity?: BackendIdentityMode;
   parentPid?: number;
   logDir?: string;
   workDir?: string;
@@ -95,6 +102,13 @@ export type BackendLaunchOptions = {
    * process.env and will likely report wrong/empty dirs.
    */
   dirs?: BackendDirConfig;
+  /**
+   * aioncore identity mode. Defaults to `'local'` (single embedded user, no
+   * auth — the desktop app's mode). Pass `'webui'` for standalone web /
+   * docker deployments, which need real per-user sessions for multi-account
+   * data isolation.
+   */
+  identity?: BackendIdentityMode;
 };
 
 export type BackendHandle = {
@@ -172,6 +186,15 @@ export type BackendStartOptions = {
   onHealthTimeout?: (error: BackendStartupError) => Promise<void> | void;
   onPendingExit?: (error: BackendStartupError) => Promise<void> | void;
   onReady?: (port: number) => Promise<void> | void;
+  /**
+   * aioncore identity mode for this launch. Defaults to `'local'` (desktop
+   * embedded single-user). Web deployments pass `'webui'` so the backend
+   * authenticates every request against the signed-in user's session —
+   * without it all traffic is attributed to `system_default_user` and
+   * multi-account isolation cannot work. Stored on the manager so crash
+   * restarts keep the same identity mode.
+   */
+  identity?: BackendIdentityMode;
 };
 
 export class BackendStartupError extends Error {
@@ -206,11 +229,19 @@ export function buildSpawnArgs(config: SpawnConfig): string[] {
     '--app-version',
     config.appVersion,
   ];
+  // 'webui' identity: real per-user sessions (login required, every request is
+  // attributed to the signed-in user) — the mode standalone web / docker
+  // deployments run in so multiple accounts get isolated data.
+  // 'local' identity: single embedded user, no auth — the desktop app's mode.
+  if (config.identity === 'webui') {
+    args.push('--identity-mode', 'webui');
+  } else {
+    args.push('--local');
+  }
   if (config.isPackaged) args.push('--managed-resources-mode', 'bundled');
   if (!config.isPackaged && process.env.AIONUI_DUMP_PROMPTS === '1') args.push('--dump-prompts');
   if (config.logDir) args.push('--log-dir', config.logDir);
   if (config.workDir) args.push('--work-dir', config.workDir);
-  if (config.local) args.push('--local');
   if (config.recoverCorruptedDatabase) args.push('--recover-corrupted-database');
   return args;
 }
@@ -229,6 +260,11 @@ export function buildSpawnEnv(dirs?: BackendDirConfig): NodeJS.ProcessEnv {
   // non-empty value, aborting the agent before the ACP handshake (#4070).
   const { PREBUILDS_ONLY: _prebuildsOnly, ...parentEnv } = process.env;
   if (!dirs) return parentEnv;
+  // NOTE: every variable present in the desktop's environment is inherited by
+  // aioncore via `parentEnv`. Operators running on an intranet can therefore
+  // route web search to a self-hosted instance (e.g. searxng) by launching the
+  // desktop with AIONUI_WEB_SEARCH_ENDPOINT set — no code change in the desktop
+  // is required for the backend to pick it up.
   return {
     ...parentEnv,
     AIONUI_CACHE_DIR: dirs.cacheDir,
@@ -665,7 +701,7 @@ export class BackendLifecycleManager {
     const args = buildSpawnArgs({
       port: this._port,
       dbPath,
-      local: true,
+      identity: options?.identity ?? 'local',
       parentPid: process.pid,
       logDir,
       workDir: dirs?.workDir,
@@ -1081,7 +1117,7 @@ export async function startBackend(opts: BackendLaunchOptions): Promise<BackendH
   if (!dataDir) {
     throw new Error('startBackend: dataDir is required');
   }
-  const port = await manager.start(dataDir, opts.logDir, opts.dirs);
+  const port = await manager.start(dataDir, opts.logDir, opts.dirs, { identity: opts.identity ?? 'local' });
   return {
     port,
     stop: () => manager.stop(),

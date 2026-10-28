@@ -1622,6 +1622,52 @@ export const webui = {
 };
 
 // ---------------------------------------------------------------------------
+// User management — local accounts for WebUI / docker deployments.
+//
+// Served by web-host's static-server at /api/auth/admin/* (NOT proxied to
+// aioncore): the backend gates its own /api/auth/internal/* user endpoints to
+// local identity mode, which web deployments deliberately don't run in —
+// webui identity mode is what gives each account its own isolated
+// conversations / projects. web-host shells out to the bundled aioncore CLI
+// instead and gates every call on the caller being the seeded admin.
+// ---------------------------------------------------------------------------
+
+/** A local account row as surfaced by the user-management API. */
+export interface IAdminUser {
+  id: string;
+  username: string;
+  user_type: string;
+  status: 'active' | 'disabled';
+  created_at: number;
+  last_login: number | null;
+}
+
+export const userAdmin = {
+  /** List local accounts (admin only). */
+  listUsers: httpGet<IAdminUser[], void>('/api/auth/admin/users'),
+  /** Create a local account with an initial password (admin only). */
+  createUser: httpPost<IAdminUser, { username: string; password: string }>('/api/auth/admin/users'),
+  /** Set another account's password (admin only). */
+  setPassword: httpPost<void, { username: string; password: string }>(
+    (p) => `/api/auth/admin/users/${encodeURIComponent(p.username)}/password`,
+    (p) => ({ password: p.password })
+  ),
+  /** Enable/disable an account (admin only). */
+  setStatus: httpPost<
+    { username: string; status: 'active' | 'disabled' },
+    { username: string; status: 'active' | 'disabled' }
+  >(
+    (p) => `/api/auth/admin/users/${encodeURIComponent(p.username)}/status`,
+    (p) => ({ status: p.status })
+  ),
+  /** Change the signed-in user's own password (requires the current one). */
+  changeMyPassword: httpPost<void, { currentPassword: string; newPassword: string }>(
+    '/api/auth/change-password',
+    (p) => ({ current_password: p.currentPassword, new_password: p.newPassword })
+  ),
+};
+
+// ---------------------------------------------------------------------------
 // Cron — routed to /api/cron/*
 // ---------------------------------------------------------------------------
 
@@ -1838,7 +1884,7 @@ export interface ICreateConversationParams {
       use_external_gateway?: boolean;
       cli_path?: string;
     };
-    web_search_engine?: 'google' | 'default';
+    web_search_engine?: 'google' | 'searxng' | 'default';
     context?: string;
     context_file_name?: string;
     /** Transient: preset opt-in skills. Consumed by backend create handler
