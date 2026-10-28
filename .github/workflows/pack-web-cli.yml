@@ -247,3 +247,49 @@ jobs:
         run: |
           chmod +x scripts/smoke-test-install-web.sh
           bash scripts/smoke-test-install-web.sh file:///tmp/releases ${{ steps.version.outputs.version }}
+
+  # ---------------------------------------------------------------------------
+  # glibc 2.28 compatibility gate.
+  # CentOS 8 / Rocky Linux 8 ship glibc 2.28. The bun-compiled server binary and
+  # the bundled aioncore are built against newer glibc on the CI images; if they
+  # need > 2.28, scripts/bundle-glibc.sh bundles a compatible glibc and wraps the
+  # binaries. This job is the authoritative check that the produced tarball
+  # actually *runs* under glibc 2.28 — it executes the full smoke test (which
+  # boots the server and logs in) inside a Rocky Linux 8 container.
+  # ---------------------------------------------------------------------------
+  glibc-compat:
+    name: glibc 2.28 compat (${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    needs: pack-web-cli
+    if: ${{ always() && needs.pack-web-cli.result == 'success' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: arm64, os: ubuntu-24.04-arm, platform: linux/arm64 }
+          - { arch: x64, os: ubuntu-latest, platform: linux/amd64 }
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Download linux-${{ matrix.arch }} tarball
+        uses: actions/download-artifact@v7
+        with:
+          name: web-cli-linux-${{ matrix.arch }}
+          path: dist-web-cli
+
+      # Run the full smoke test (boots the server + logs in) inside a Rocky
+      # Linux 8 image so the binaries are exercised against glibc 2.28. We use
+      # `docker run` from the host rather than a `container:` job so the JS
+      # actions (checkout/download-artifact) keep using the runner's Node.
+      - name: Run smoke test under glibc 2.28 (Rocky Linux 8)
+        shell: bash
+        run: |
+          chmod +x scripts/smoke-test-web-cli.sh
+          TARBALL=$(ls dist-web-cli/*.tar.gz | head -1)
+          docker run --rm \
+            --platform '${{ matrix.platform }}' \
+            -v "$PWD:/work" -w /work \
+            rockylinux:8 \
+            bash -lc "dnf install -y curl tar gzip >/dev/null 2>&1 || yum install -y curl tar gzip >/dev/null 2>&1; bash scripts/smoke-test-web-cli.sh '$TARBALL'"

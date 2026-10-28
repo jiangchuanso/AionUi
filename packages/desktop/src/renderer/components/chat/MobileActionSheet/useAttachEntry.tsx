@@ -5,7 +5,7 @@
  */
 
 import { useConversationContextSafe } from '@/renderer/hooks/context/ConversationContext';
-import { FileService, type FileMetadata } from '@/renderer/services/FileService';
+import { FileService, UploadFailedError, type FileMetadata } from '@/renderer/services/FileService';
 import { isElectronDesktop } from '@/renderer/utils/platform';
 import { Message } from '@arco-design/web-react';
 import { FolderOpen, FolderUpload, Paperclip } from '@icon-park/react';
@@ -54,7 +54,10 @@ export const useAttachEntry = ({
       try {
         const processed = await FileService.processDroppedFiles(fileList, conversationContext?.conversation_id);
         if (processed.length > 0) onLocalFilesAdded(processed);
-      } catch {
+      } catch (error) {
+        if (error instanceof UploadFailedError && error.processed.length > 0) {
+          onLocalFilesAdded(error.processed);
+        }
         Message.error(t('common.fileAttach.failed'));
       }
       e.target.value = '';

@@ -8,7 +8,7 @@ import { useCallback, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Message } from '@arco-design/web-react';
 import type { FileMetadata } from '@renderer/services/FileService';
-import { isSupportedFile, FileService } from '@renderer/services/FileService';
+import { isSupportedFile, FileService, UploadFailedError } from '@renderer/services/FileService';
 
 export interface UseDragUploadOptions {
   supportedExts?: string[];
@@ -96,6 +96,11 @@ export const useDragUpload = ({ supportedExts = [], onFilesAdded, conversation_i
           }
         }
       } catch (err) {
+        // processDroppedFiles throws UploadFailedError carrying any files that
+        // uploaded successfully — attach those before reporting the failure.
+        if (err instanceof UploadFailedError && err.processed.length > 0) {
+          onFilesAdded(err.processed);
+        }
         console.error('Failed to process dropped files:', err);
         Message.error(t('conversation.workspace.dragFailed', 'Failed to process dropped files'));
       }

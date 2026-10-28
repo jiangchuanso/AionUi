@@ -17,7 +17,7 @@ import type {
 import type { AgentModeOption } from '@/renderer/utils/model/agentTypes';
 import type { AgentRuntimeDerivedOption } from '@/renderer/utils/model/agentRuntimeCatalog';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
-import { getCleanFileNames, FileService } from '@/renderer/services/FileService';
+import { getCleanFileNames, FileService, UploadFailedError } from '@/renderer/services/FileService';
 import { iconColors } from '@/renderer/styles/colors';
 import { isElectronDesktop } from '@/renderer/utils/platform';
 import type { AcpModelInfo } from '../types';
@@ -180,7 +180,10 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
         if (processed.length > 0) {
           onFilesUploaded(processed.map((f) => f.path));
         }
-      } catch {
+      } catch (error) {
+        if (error instanceof UploadFailedError && error.processed.length > 0) {
+          onFilesUploaded(error.processed.map((f) => f.path));
+        }
         Message.error(t('common.fileAttach.failed'));
       } finally {
         setUploading(false);

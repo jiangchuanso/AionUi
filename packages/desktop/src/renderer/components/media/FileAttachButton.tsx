@@ -11,7 +11,7 @@ import { FolderOpen, Lightning, Paperclip, Plus, Right, Shield } from '@icon-par
 import { useConversationContextSafe } from '@/renderer/hooks/context/ConversationContext';
 import { iconColors } from '@/renderer/styles/colors';
 import { isElectronDesktop } from '@/renderer/utils/platform';
-import { FileService } from '@/renderer/services/FileService';
+import { FileService, UploadFailedError } from '@/renderer/services/FileService';
 import type { FileMetadata } from '@/renderer/services/FileService';
 import { emitter } from '@/renderer/utils/emitter';
 import React, { useCallback, useRef, useState } from 'react';
@@ -117,7 +117,10 @@ const FileAttachButton: React.FC<FileAttachButtonProps> = ({
       try {
         const processed = await FileService.processDroppedFiles(fileList, conversationContext?.conversation_id);
         if (processed.length > 0) onLocalFilesAdded(processed);
-      } catch {
+      } catch (error) {
+        if (error instanceof UploadFailedError && error.processed.length > 0) {
+          onLocalFilesAdded(error.processed);
+        }
         Message.error(t('common.fileAttach.failed'));
       } finally {
         setUploading(false);
