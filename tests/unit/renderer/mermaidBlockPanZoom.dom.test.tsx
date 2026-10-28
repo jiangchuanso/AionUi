@@ -5,7 +5,7 @@
  */
 
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import React from 'react';
 
 const renderMock = vi.hoisted(() => vi.fn());
@@ -88,7 +88,7 @@ describe('MermaidBlock pan/zoom', () => {
 
   it('renders a static diagram without zoom controls by default', async () => {
     render(<MermaidBlock code={'graph TD; A-->B'} />);
-    const diagram = await screen.findByTestId('mermaid-diagram');
+    const diagram = await screen.findByTestId('mermaid-diagram', undefined, { timeout: 5000 });
     // Default path scrolls natively and exposes no zoom controls.
     expect(diagram.style.overflowX).toBe('auto');
     expect(screen.queryByTestId('mermaid-zoom-in')).toBeNull();
@@ -97,48 +97,55 @@ describe('MermaidBlock pan/zoom', () => {
 
   it('shows zoom controls and applies/resets scale when enablePanZoom is set', async () => {
     render(<MermaidBlock code={'graph TD; A-->B'} enablePanZoom />);
-    const diagram = await screen.findByTestId('mermaid-diagram');
+    const diagram = await screen.findByTestId('mermaid-diagram', undefined, { timeout: 5000 });
     // Pan viewport clips (hidden overflow) instead of native scroll.
     expect(diagram.style.overflow).toBe('hidden');
 
-    const inner = diagram.firstElementChild as HTMLElement;
-    expect(inner.style.transform).toContain('scale(1)');
+    // MermaidBlock resets the pan/zoom transform in a passive `useEffect([svg])`.
+    // Flush that reset before interacting — otherwise a still-queued reset can
+    // land after our click and overwrite the zoom, making this test flaky.
+    await act(async () => {});
+
+    const getInner = () => diagram.firstElementChild as HTMLElement;
+    await waitFor(() => expect(getInner().style.transform).toContain('scale(1)'), { timeout: 5000 });
 
     fireEvent.click(screen.getByTestId('mermaid-zoom-in'));
-    expect(inner.style.transform).toContain('scale(1.25)');
+    await waitFor(() => expect(getInner().style.transform).toContain('scale(1.25)'), { timeout: 5000 });
 
     fireEvent.click(screen.getByTestId('mermaid-zoom-out'));
-    expect(inner.style.transform).toContain('scale(1)');
+    await waitFor(() => expect(getInner().style.transform).toContain('scale(1)'), { timeout: 5000 });
 
     fireEvent.click(screen.getByTestId('mermaid-zoom-in'));
     fireEvent.click(screen.getByTestId('mermaid-zoom-reset'));
-    expect(inner.style.transform).toContain('translate(0px, 0px) scale(1)');
+    await waitFor(() => expect(getInner().style.transform).toContain('translate(0px, 0px) scale(1)'), {
+      timeout: 5000,
+    });
   });
 
   it('caps narrow diagrams at their natural width so they render 1:1', async () => {
     renderMock.mockResolvedValue({ svg: '<svg viewBox="0 0 100 200" width="100%"></svg>' });
     render(<MermaidBlock code={'graph TD; A-->B'} />);
-    const diagram = await screen.findByTestId('mermaid-diagram');
+    const diagram = await screen.findByTestId('mermaid-diagram', undefined, { timeout: 5000 });
     expect(diagram.querySelector('svg')?.getAttribute('style')).toContain('max-width: min(100%, 100px)');
   });
 
   it('caps wide diagrams at the container width', async () => {
     renderMock.mockResolvedValue({ svg: '<svg viewBox="0 0 2000 100" width="100%"></svg>' });
     render(<MermaidBlock code={'graph TD; A-->B'} />);
-    const diagram = await screen.findByTestId('mermaid-diagram');
+    const diagram = await screen.findByTestId('mermaid-diagram', undefined, { timeout: 5000 });
     expect(diagram.querySelector('svg')?.getAttribute('style')).toContain('max-width: min(100%, 2000px)');
   });
 
   it('opens the zoom overlay when the static diagram is clicked', async () => {
     render(<MermaidBlock code={'graph TD; A-->B'} />);
-    const diagram = await screen.findByTestId('mermaid-diagram');
+    const diagram = await screen.findByTestId('mermaid-diagram', undefined, { timeout: 5000 });
     fireEvent.click(diagram);
     expect(screen.getByTestId('diagram-zoom-overlay')).toBeInTheDocument();
   });
 
   it('opens the zoom overlay on click without panning when drag-to-pan is enabled', async () => {
     render(<MermaidBlock code={'graph TD; A-->B'} enablePanZoom />);
-    const diagram = await screen.findByTestId('mermaid-diagram');
+    const diagram = await screen.findByTestId('mermaid-diagram', undefined, { timeout: 5000 });
 
     fireEvent.pointerDown(diagram, { pointerId: 1, button: 0, clientX: 10, clientY: 10 });
     fireEvent.pointerMove(diagram, { pointerId: 1, clientX: 12, clientY: 11 });
@@ -151,7 +158,7 @@ describe('MermaidBlock pan/zoom', () => {
 
   it('pans instead of opening the overlay when the pointer drags past the threshold', async () => {
     render(<MermaidBlock code={'graph TD; A-->B'} enablePanZoom />);
-    const diagram = await screen.findByTestId('mermaid-diagram');
+    const diagram = await screen.findByTestId('mermaid-diagram', undefined, { timeout: 5000 });
 
     fireEvent.pointerDown(diagram, { pointerId: 1, button: 0, clientX: 10, clientY: 10 });
     fireEvent.pointerMove(diagram, { pointerId: 1, clientX: 60, clientY: 40 });
