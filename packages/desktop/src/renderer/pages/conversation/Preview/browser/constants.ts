@@ -37,7 +37,20 @@ export const BROWSER_TAB_FALLBACK_TITLE = 'New Tab';
 export const MAX_BROWSER_TABS = 10;
 
 /** 默认搜索引擎，地址栏输入非 URL 时使用 / Default search engine for non-URL input. */
-const SEARCH_URL_TEMPLATE = 'https://www.bing.com/search?q={query}';
+const DEFAULT_SEARCH_URL_TEMPLATE = 'https://www.bing.com/search?q={query}';
+
+/**
+ * Search engine used by the in-app browser address bar. Overridable via the
+ * `AIONUI_BROWSER_SEARCH_URL` env var so intranet deployments can point the
+ * built-in search at a self-hosted instance (e.g. searxng) instead of a public
+ * engine. The `{query}` placeholder is required and replaced with the encoded
+ * search term. Falls back to the public default when unset or malformed.
+ */
+const SEARCH_URL_TEMPLATE = (() => {
+  const override = process.env.AIONUI_BROWSER_SEARCH_URL;
+  if (override && override.includes('{query}')) return override;
+  return DEFAULT_SEARCH_URL_TEMPLATE;
+})();
 
 /**
  * 已知的无主机名 scheme：这些直接原样通过，不做域名猜测。

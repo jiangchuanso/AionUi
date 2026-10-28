@@ -166,20 +166,63 @@ afterSign: scripts/afterSign.js
 linux:
   target:
     - deb
-  icon: resources/app.png
+  # 512x512（而不是 1024x1024）：fpm 按图片真实尺寸把图标放进
+  # /usr/share/icons/hicolor/<size>/apps/，而 hicolor 主题的 index.theme 只声明
+  # 到 512x512。1024 目录不在主题索引里，UKUI / GTK 会直接忽略它，菜单里就
+  # 变成空白图标。512 是 freedesktop 图标主题规范里的最大标准尺寸。
+  icon: resources/app-512.png
   artifactName: ${productName}-${version}-${os}-${arch}.${ext}
   category: Utility
   maintainer: aionui
   vendor: aionui
-  synopsis: ${description}
-  description: ${description}
+  # 写死文本：${description} 模板在 deb 的 Synopsis/Description 里不会被替换，
+  # 打包后包管理器里会原样显示 "${description}"。
+  synopsis: AI Agent cowork platform
+  description: Transform your command-line AI agent into a modern, efficient AI Chat interface.
   desktop:
     entry:
       Name: AionUi
-      Comment: ${description}
+      Comment: AI Agent cowork platform
       Icon: AionUi
       Categories: Office;Utility;
       MimeType: x-scheme-handler/aionui;
+
+deb:
+  # Chromium/Electron 运行所需的系统库。electron-builder 的默认 Depends 只覆盖
+  # 一部分，缺少 libgbm1/libdrm2/libasound2 等时在精简安装的发行版上会出现
+  # 「装得上、点不开」。这里显式声明会替换默认值，所以把默认项也一并列出。
+  # 这些包在 Ubuntu 20.04（麒麟 V10 SP1 桌面版基线）的源里都存在。
+  depends:
+    # —— electron-builder 默认依赖（保留）——
+    - libgtk-3-0
+    - libnotify4
+    - libnss3
+    - libxss1
+    - libxtst6
+    - xdg-utils
+    - libatspi2.0-0
+    - libuuid1
+    - libsecret-1-0
+    # —— 桌面启动必需的 Chromium 依赖（补齐）——
+    - libgbm1
+    - libdrm2
+    - libasound2
+    - libatk-bridge2.0-0
+    - libcups2
+    - libxkbcommon0
+    - libx11-xcb1
+    - libxcomposite1
+    - libxdamage1
+    - libxrandr2
+    - libpango-1.0-0
+    - libcairo2
+  # libappindicator3-1 是默认值（托盘图标）。xauth/xvfb 只有 headless / 远程
+  # WebUI 才需要，缺了不影响桌面启动，放 Recommends 以免在软件源不完整的
+  # 机器上把安装卡住。
+  recommends:
+    - libappindicator3-1
+    - xauth
+    - xvfb
 
 npmRebuild: false
 buildDependenciesFromSource: false

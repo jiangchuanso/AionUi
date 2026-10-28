@@ -19,13 +19,19 @@ vi.mock('electron', () => ({
   app: { getVersion: () => '0.0.0-test', getPath: () => '/tmp', isPackaged: false },
 }));
 
-let sentryInitOptions: { beforeSend?: (event: unknown) => unknown } | undefined;
+type CapturedInitOptions = {
+  beforeSend?: (event: unknown) => unknown;
+  shutdownTimeout?: number;
+  integrations?: (integrations: { name: string }[]) => { name: string }[];
+};
+
+let sentryInitOptions: CapturedInitOptions | undefined;
 const scopeSetContext = vi.fn();
 const scopeSetExtra = vi.fn();
 const scopeSetTag = vi.fn();
 
 vi.mock('@sentry/electron/main', () => ({
-  init: vi.fn((options: { beforeSend?: (event: unknown) => unknown }) => {
+  init: vi.fn((options: CapturedInitOptions) => {
     sentryInitOptions = options;
   }),
   setTag: vi.fn(),
@@ -437,5 +443,24 @@ describe('initSentry beforeSend', () => {
     expect(sentryInitOptions?.beforeSend?.(event)).toBe(event);
 
     delete (globalThis as { __backendStartupFailed?: boolean }).__backendStartupFailed;
+  });
+});
+
+describe('initSentry offline options', () => {
+  it('bounds the shutdown flush timeout', () => {
+    initSentry();
+
+    expect(sentryInitOptions?.shutdownTimeout).toBe(2000);
+  });
+
+  it('drops the main-process session integration to avoid background session POSTs', () => {
+    initSentry();
+
+    const integrations = sentryInitOptions?.integrations;
+    expect(typeof integrations).toBe('function');
+
+    const filtered = integrations?.([{ name: 'MainProcessSession' }, { name: 'SentryMinidump' }]);
+
+    expect(filtered?.map((integration) => integration.name)).toEqual(['SentryMinidump']);
   });
 });
