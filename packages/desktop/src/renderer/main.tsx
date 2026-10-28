@@ -95,6 +95,7 @@ import { registerPwa } from './services/registerPwa';
 import { ipcBridge } from '@/common';
 import { repairAllCronJobTimeZonesOnce } from '@renderer/pages/cron/repairCronJobTimeZone';
 import { bootstrapRendererConfig } from '@renderer/services/bootstrapRenderer';
+import { ensureWebBuiltinAssistantDefaults } from '@renderer/services/webBuiltinAssistantDefaults';
 
 // Components and utilities
 import BackendStartingView from './components/layout/BackendStartingView';
@@ -340,7 +341,7 @@ const Config: React.FC<PropsWithChildren> = ({ children }) => {
 };
 
 const Main = () => {
-  const { ready } = useAuth();
+  const { ready, status } = useAuth();
   const [configReady, setConfigReady] = useState(false);
 
   useEffect(() => {
@@ -352,6 +353,13 @@ const Main = () => {
     if (!ready) return;
     void repairAllCronJobTimeZonesOnce();
   }, [ready]);
+
+  // WebUI: one-shot "all built-in assistants/skills on" bootstrap per account.
+  // Desktop runs the equivalent migration in the Electron main process instead.
+  useEffect(() => {
+    if (!ready || status !== 'authenticated') return;
+    void ensureWebBuiltinAssistantDefaults();
+  }, [ready, status]);
 
   if (!ready || !configReady) {
     return null;

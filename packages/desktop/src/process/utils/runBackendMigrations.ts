@@ -5,6 +5,7 @@
  */
 
 import { execFile } from 'node:child_process';
+import { ipcBridge } from '@/common';
 import { migrateConfigStorage, migrateLegacyMcpConfigToDb, migrateProviders } from '@/common/config/configMigration';
 import { httpRequest } from '@/common/adapter/httpBridge';
 import { mcpService } from '@/common/adapter/ipcBridge';
@@ -444,6 +445,69 @@ async function ensureBootstrapMcpServersInDb(configFile: ConfigFile): Promise<vo
   );
 }
 
+/**
+ * Local config key recording that the "enable all built-in assistants + skills
+ * by default" bootstrap has already run once on this machine. Without it, the
+ * step re-ran on every launch, force re-enabling built-in assistants and wiping
+ * the user's disabled-skill choices — so they could never stay disabled.
+ */
+const BUILTIN_ALL_ENABLED_FLAG = 'migration.builtinAllEnabled_v1' as const;
+
+/**
+ * One-shot migration: enable every built-in assistant and clear its disabled
+ * built-in skill list so all built-in assistants and skills start out on. After
+ * the first successful pass a flag is persisted, so any later user change
+ * (disabling an assistant/skill) sticks across restarts.
+ */
+async function enableAllBuiltinAssistantsAndSkills(configFile: ConfigFile): Promise<boolean> {
+  let alreadyApplied = false;
+  try {
+    alreadyApplied = Boolean(await configFile.get(BUILTIN_ALL_ENABLED_FLAG));
+  } catch {
+    // Flag missing or unreadable — treat as a first run.
+  }
+  if (alreadyApplied) {
+    console.info('[AionUi] builtin-all-enabled migration skipped — completion flag already set');
+    return true;
+  }
+
+  // Let a failure here throw so the step is retried on the next launch (the
+  // flag is only persisted after a successful pass over the assistant list).
+  const assistants = await ipcBridge.assistants.list.invoke();
+  const builtins = assistants.filter((assistant) => assistant.source === 'builtin');
+  let updated = 0;
+
+  for (const assistant of builtins) {
+    const needsEnable = assistant.enabled !== true;
+    const needsSkillReset = (assistant.disabled_builtin_skills?.length ?? 0) > 0;
+    if (!needsEnable && !needsSkillReset) continue;
+
+    try {
+      if (needsEnable) {
+        await ipcBridge.assistants.setState.invoke({ id: assistant.id, enabled: true });
+      }
+      if (needsSkillReset) {
+        await ipcBridge.assistants.update.invoke({ id: assistant.id, disabled_builtin_skills: [] });
+      }
+      updated += 1;
+    } catch (error) {
+      console.warn(`[AionUi] Failed to enable built-in assistant '${assistant.id}':`, error);
+    }
+  }
+
+  if (updated > 0) {
+    console.info('[AionUi] Enabled %d built-in assistant(s) with all built-in skills on', updated);
+  }
+
+  try {
+    await configFile.set(BUILTIN_ALL_ENABLED_FLAG, true);
+  } catch (error) {
+    // Non-fatal: worst case the bootstrap re-runs next launch (idempotent).
+    console.warn('[AionUi] Failed to persist builtin-all-enabled migration flag:', error);
+  }
+  return true;
+}
+
 const MIGRATION_STEPS: Array<{
   name: string;
   run: (configFile: ConfigFile) => Promise<MigrationStepResult>;
@@ -459,6 +523,10 @@ const MIGRATION_STEPS: Array<{
     run: async (configFile) => (await ensureBootstrapMcpServersInDb(configFile), true),
   },
   { name: 'migrateAssistantsToBackend', run: async (configFile) => migrateAssistantsToBackend(configFile) },
+  {
+    name: 'enableAllBuiltinAssistantsAndSkills',
+    run: async (configFile) => enableAllBuiltinAssistantsAndSkills(configFile),
+  },
 ];
 
 async function syncBuiltinMcpConfig(configFile: ConfigFile): Promise<void> {

@@ -47,6 +47,7 @@ export type ConfigKeyMap = {
   // `migrateProviders` / `migrateAssistantsToBackend` (ELECTRON-1KT).
   'migration.providersMigrated_v1': boolean | undefined;
   'migration.assistantsMigrated_v1': boolean | undefined;
+  'migration.builtinAllEnabled_v1': boolean | undefined;
 };
 
 export type ConfigKey = keyof ConfigKeyMap;

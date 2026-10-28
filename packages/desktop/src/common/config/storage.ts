@@ -77,6 +77,12 @@ export interface IConfigStorageRefer {
    * still-on-disk legacy field.
    */
   'migration.assistantsMigrated_v1'?: boolean;
+  /**
+   * One-shot flag for the fork's "enable all built-in assistants + skills by
+   * default" bootstrap. Set after the first successful pass so that afterwards
+   * a user-disabled built-in assistant/skill stays disabled across restarts.
+   */
+  'migration.builtinAllEnabled_v1'?: boolean;
   // Desktop Pet: whether the desktop pet feature is enabled
   'pet.enabled'?: boolean;
   // Desktop Pet: size in pixels (200, 280, or 360)
