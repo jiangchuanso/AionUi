@@ -1042,6 +1042,29 @@ export const useMessageLstCache = (key: string) => {
       return;
     }
 
+    // Realtime socket came back after a gap (network blip, laptop sleep, an
+    // expired session the refresh path recovered). WS frames are not replayed,
+    // so stream events pushed while the socket was down — tool cards, finished
+    // text — are missing from the live list, which is what makes a conversation
+    // look like it lost its streaming output after a page switch. Re-pull the
+    // authoritative page; the merge keeps whichever text version is longer, so
+    // in-flight content never regresses.
+    //
+    // Best-effort lookup: the resync is an enhancement, so a bridge without the
+    // realtime surface (older backend, partial bridge in tests) skips it rather
+    // than crashing the whole message list on mount.
+    return ipcBridge.realtime?.reconnected?.on(() => {
+      void loadMessages().catch((error) => {
+        console.error('[useMessageLstCache] Failed to resync messages after realtime reconnect:', error);
+      });
+    });
+  }, [key, loadMessages]);
+
+  useEffect(() => {
+    if (!key) {
+      return;
+    }
+
     // Reconciliation backstop at every turn boundary. The live statusChanged
     // flip above is best-effort — a live window can miss the event (codex
     // ack-timeout, a WS gap, or a row left orphaned by a server restart) and

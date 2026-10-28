@@ -32,6 +32,11 @@ vi.mock('@/common', () => ({
         on: vi.fn().mockReturnValue(() => {}),
       },
     },
+    realtime: {
+      reconnected: {
+        on: vi.fn().mockReturnValue(() => {}),
+      },
+    },
     database: {
       getConversationMessages: {
         invoke: vi.fn(),
@@ -577,5 +582,42 @@ describe('message merging', () => {
     });
 
     expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('re-pulls the authoritative page when the realtime socket reconnects', async () => {
+    const invoke = vi.mocked(ipcBridge.database.getConversationMessages.invoke);
+    invoke.mockResolvedValue({
+      items: [],
+      oldest_cursor: null,
+      newest_cursor: null,
+      has_more_before: false,
+      has_more_after: false,
+    });
+
+    let emitReconnected: (() => void) | undefined;
+    vi.mocked(ipcBridge.realtime.reconnected.on).mockImplementation((cb: any) => {
+      emitReconnected = cb;
+      return () => {};
+    });
+
+    renderHook(() => useMessageLstCache(CONVERSATION_ID), { wrapper: CacheWrapper });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    invoke.mockClear();
+
+    // A reconnect after a WS gap: frames pushed while the socket was down are
+    // gone, so the list must resync from the DB instead of showing a truncated
+    // stream.
+    act(() => {
+      emitReconnected?.();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(invoke).toHaveBeenCalled();
   });
 });
