@@ -1,0 +1,100 @@
+name: Auto Retry on Build Failure
+# 说明：本文件在 fork 中长期未被 GitHub 注册（默认分支 workflow 文件变更推送后
+# 才会重新扫描）。此处保留说明并随 build-and-release 一并重新注册，确保构建
+# 首次失败时能自动重试。
+
+# GitHub only allows re-running a workflow run *after* it has finished. Calling
+# the rerun API from inside that same run always failed with
+# 403 "This workflow is already running", so the retry logic lives in its own
+# workflow triggered by `workflow_run` (i.e. once "Build and Release" completed).
+on:
+  workflow_run:
+    workflows: ['Build and Release']
+    types: [completed]
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  auto-retry-workflow:
+    name: Auto Retry on Build Failure
+    runs-on: ubuntu-latest
+    # 关键：只在首次失败时触发，避免无限循环
+    if: |
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.run_attempt == 1 &&
+      github.event.workflow_run.event == 'push'
+
+    steps:
+      - name: Log retry information
+        run: |
+          echo "=========================================="
+          echo "🔄 Auto retry triggered (first failure)"
+          echo "=========================================="
+          echo "Build failed on first attempt, preparing auto retry..."
+          echo "Source run: ${{ github.event.workflow_run.id }}"
+          echo "Current attempt: ${{ github.event.workflow_run.run_attempt }}"
+          echo "Wait strategy: 5 minutes cooldown before retry"
+          echo "=========================================="
+
+      - name: Wait before retry (5 min cooldown)
+        run: |
+          echo "⏳ Waiting 5 minutes before retry..."
+          echo "Start: $(date)"
+          sleep 300
+          echo "End: $(date)"
+          echo "Triggering retry..."
+
+      - name: Trigger workflow rerun
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          echo "🔄 Triggering full workflow rerun (attempt 2)..."
+
+          # GitHub 在 workflow_run completed 事件触发后，源 run 有时仍处于最终
+          # 收尾状态，此时直接调 rerun 会返回 403 "This workflow is already
+          # running"。先轮询直到 run 状态稳定为 completed。
+          for attempt in $(seq 1 30); do
+            status=$(curl -sS -H "Authorization: token $GH_TOKEN" \
+              -H "Accept: application/vnd.github.v3+json" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/runs/${RUN_ID}" \
+              | grep -o '"status":"[^"]*"' | head -n1 | cut -d'"' -f4)
+            echo "  poll #$attempt: run status = ${status:-unknown}"
+            if [ "$status" = "completed" ]; then
+              break
+            fi
+            sleep 10
+          done
+
+          # 用 rerun API（而非 rerun-failed-jobs，避免循环）。run 从 completed 到
+          # 可被 rerun 之间可能有短暂延迟，失败时重试几次。
+          ok=""
+          for attempt in $(seq 1 5); do
+            response=$(curl -sS -X POST \
+              -H "Accept: application/vnd.github.v3+json" \
+              -H "Authorization: token $GH_TOKEN" \
+              -w "\n%{http_code}" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/runs/${RUN_ID}/rerun")
+
+            http_code=$(echo "$response" | tail -n1)
+
+            if [ "$http_code" = "201" ]; then
+              ok=1
+              break
+            fi
+            echo "  rerun attempt #$attempt failed, HTTP $http_code: $(echo "$response" | head -n-1)"
+            sleep 15
+          done
+
+          if [ -n "$ok" ]; then
+            echo ""
+            echo "✅ Retry triggered successfully"
+            echo "This will be attempt 2"
+            echo "Details: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${RUN_ID}"
+          else
+            echo ""
+            echo "❌ Retry trigger failed after retries"
+            exit 1
+          fi

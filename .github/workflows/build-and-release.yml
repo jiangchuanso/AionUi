@@ -2,13 +2,17 @@ name: Build and Release
 
 permissions:
   contents: write
+  packages: write
   issues: read
   pull-requests: read
   actions: write
 
 on:
   push:
-    branches: [dev]
+    # main 仅跑代码质量检查（release 前检查）；dev / tag 才走完整构建与发布。
+    # 注意：本工作流在 fork 里曾长期未注册（.github/workflows 内容变更推送后
+    # GitHub 才会重新扫描并注册），补上 main 触发同时也强制其完成注册。
+    branches: [dev, main]
     tags:
       - '*'
 
@@ -20,7 +24,8 @@ jobs:
   code-quality:
     name: Code Quality
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/dev' || (startsWith(github.ref, 'refs/tags/') && !contains(github.ref, '-dev-'))
+    # dev / main / 正式 tag 都跑 release 前检查；main 只跑这一项，不触发构建。
+    if: github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' || (startsWith(github.ref, 'refs/tags/') && !contains(github.ref, '-dev-'))
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -58,7 +63,8 @@ jobs:
     uses: ./.github/workflows/_build-reusable.yml
     needs: code-quality
     # dev 分支或正式 tag 触发构建（排除 -dev- tag，避免重复构建）
-    if: vars.PUBLISH_RELEASE == 'true' && needs.code-quality.result == 'success' && (github.ref == 'refs/heads/dev' || (startsWith(github.ref, 'refs/tags/') && !contains(github.ref, '-dev-')))
+    # Fork 说明：已移除 PUBLISH_RELEASE 开关，构建始终执行，不再依赖仓库变量。
+    if: needs.code-quality.result == 'success' && (github.ref == 'refs/heads/dev' || (startsWith(github.ref, 'refs/tags/') && !contains(github.ref, '-dev-')))
     with:
       skip_code_quality: true
       matrix: >-
@@ -77,68 +83,179 @@ jobs:
     uses: ./.github/workflows/pack-web-cli.yml
     needs: code-quality
     # 与桌面构建同频触发：dev 分支或正式 tag（排除 -dev- tag）
-    if: vars.PUBLISH_RELEASE == 'true' && needs.code-quality.result == 'success' && (github.ref == 'refs/heads/dev' || (startsWith(github.ref, 'refs/tags/') && !contains(github.ref, '-dev-')))
+    # Fork 说明：已移除 PUBLISH_RELEASE 开关，打包始终执行。
+    if: needs.code-quality.result == 'success' && (github.ref == 'refs/heads/dev' || (startsWith(github.ref, 'refs/tags/') && !contains(github.ref, '-dev-')))
     with:
       ref: ''
       append_commit_hash: false
       skip_code_quality: true
     secrets: inherit
 
-  # 自动重试 workflow（当构建失败时）
-  auto-retry-workflow:
-    name: Auto Retry on Build Failure
-    runs-on: ubuntu-latest
-    needs: build-pipeline
-    # 关键：只在首次失败时触发，避免无限循环
-    if: |
-      failure() &&
-      github.run_attempt == 1 &&
-      (github.event_name == 'push' || github.event_name == 'schedule')
+  # Docker 镜像产物（x64 / arm64）。
+  # 复用 pack-web-cli 产出的 linux tarball 作为构建上下文：镜像 = tarball 内容
+  # （aionui-web 二进制 + aioncore 后端 + SPA 静态资源）+ 预装 officecli +
+  # libicu，开箱即用，无需在客户服务器上再安装任何组件。
+  # 镜像 tar 同时作为 Release 产物附加；GHCR 推送为尽力而为（登录失败不阻塞）。
+  docker-images:
+    name: Build Docker Image (${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    needs: pack-web-cli
+    # dev 分支或正式 tag 触发构建（排除 -dev- tag，避免重复构建）
+    if: needs.code-quality.result == 'success' && (github.ref == 'refs/heads/dev' || (startsWith(github.ref, 'refs/tags/') && !contains(github.ref, '-dev-'))) && needs.pack-web-cli.result == 'success'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x64, os: ubuntu-latest, platform: 'linux/amd64', suffix: 'amd64' }
+          - { arch: arm64, os: ubuntu-24.04-arm, platform: 'linux/arm64', suffix: 'arm64' }
 
     steps:
-      - name: Log retry information
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Get version from package.json
+        id: version
         run: |
-          echo "=========================================="
-          echo "🔄 Auto retry triggered (first failure)"
-          echo "=========================================="
-          echo "Build failed on first attempt, preparing auto retry..."
-          echo "Current attempt: ${{ github.run_attempt }}"
-          echo "Wait strategy: 5 minutes cooldown before retry"
-          echo "=========================================="
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-      - name: Wait before retry (5 min cooldown)
+      - name: Download web-cli tarball (linux-${{ matrix.arch }})
+        uses: actions/download-artifact@v7
+        with:
+          name: web-cli-linux-${{ matrix.arch }}
+          path: dist-web-cli
+
+      - name: Stage Docker build context
         run: |
-          echo "⏳ Waiting 5 minutes before retry..."
-          echo "Start: $(date)"
-          sleep 300
-          echo "End: $(date)"
-          echo "Triggering retry..."
+          mkdir -p dist-docker/context
+          # 归一化文件名，Dockerfile 通过 WEB_CLI_TARBALL 接收
+          cp dist-web-cli/aionui-web-*.tar.gz dist-docker/context/aionui-web.tar.gz
+          ls -lh dist-docker/context/
 
-      - name: Trigger workflow rerun
+      - name: Log in to GHCR
+        id: ghcr_login
+        continue-on-error: true
         run: |
-          echo "🔄 Triggering full workflow rerun (attempt 2)..."
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
-          # Use re-run API (not rerun-failed-jobs, to avoid loops)
-          response=$(curl -X POST \
-            -H "Accept: application/vnd.github.v3+json" \
-            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            -w "\n%{http_code}" \
-            https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/rerun)
+      # 镜像 tar 产物是 Release 附件，构建不依赖 registry：始终本地 load
+      - name: Build image (${{ matrix.platform }})
+        uses: docker/build-push-action@v6
+        with:
+          context: dist-docker/context
+          file: Dockerfile
+          platforms: ${{ matrix.platform }}
+          push: false
+          load: true
+          build-args: |
+            WEB_CLI_TARBALL=aionui-web.tar.gz
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/aionui:${{ steps.version.outputs.version }}-${{ matrix.suffix }}
+          labels: |
+            org.opencontainers.image.title=AionUi
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
 
-          http_code=$(echo "$response" | tail -n1)
-
-          if [ "$http_code" = "201" ]; then
-            echo ""
-            echo "✅ Retry triggered successfully"
-            echo "This will be attempt 2"
-            echo "Details: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          else
-            echo ""
-            echo "❌ Retry trigger failed, HTTP status: $http_code"
-            echo "Response:"
-            echo "$response" | head -n-1
+      # 冒烟测试：officecli 能在镜像内直接执行（ICU 检查），且服务端能完整拉起
+      - name: Smoke test image
+        run: |
+          IMAGE="ghcr.io/${{ github.repository_owner }}/aionui:${{ steps.version.outputs.version }}-${{ matrix.suffix }}"
+          # officecli 预装验证：.NET 二进制无 ICU 会直接 abort
+          docker run --rm --entrypoint /usr/local/bin/officecli "$IMAGE" --version
+          # 完整启动验证：SPA + 后端 + /api 代理
+          # 注意：docker/webui 部署模式下 aioncore 对 /api/system/info 强制鉴权，
+          # 未登录会返回 401 —— 这本身就证明后端已正常拉起并响应。因此就绪探测
+          # 以「能拿到任意 HTTP 响应（端口在监听）」为准，而非要求 2xx；curl 的
+          # http_code 为 000 才表示端口尚未就绪（连接被拒）。
+          docker run -d --name aionui-smoke -p 3000:3000 "$IMAGE"
+          # 注意：不要写成 `curl ... || echo 000`。curl 失败时 -w 已经输出过 000，
+          # `||` 再追加一次会让 $code 变成 "000000"，与 "000" 比较不相等被误判成就绪。
+          code="000"
+          for i in $(seq 1 45); do
+            code=$(curl -sS -o /tmp/sysinfo.json -w '%{http_code}' \
+              http://127.0.0.1:3000/api/system/info 2>/dev/null) || code="000"
+            if [ "$code" != "000" ] && [ -n "$code" ]; then
+              echo "✓ server responded with HTTP $code"
+              break
+            fi
+            code="000"
+            sleep 2
+          done
+          docker logs aionui-smoke | tail -30 || true
+          docker rm -f aionui-smoke > /dev/null || true
+          if [ "$code" = "000" ]; then
+            echo "::error::Container did not become ready within 90s (port 3000 not listening)"
             exit 1
           fi
+          echo "✓ /api/system/info (HTTP $code):"
+          cat /tmp/sysinfo.json 2>/dev/null || echo "(empty response body)"
+
+      # GHCR 推送为尽力而为：失败只告警，不影响镜像 tar 产物
+      - name: Push image to GHCR
+        if: steps.ghcr_login.outcome == 'success'
+        continue-on-error: true
+        run: |
+          docker push "ghcr.io/${{ github.repository_owner }}/aionui:${{ steps.version.outputs.version }}-${{ matrix.suffix }}"
+
+      - name: Save image tarball
+        run: |
+          IMAGE="ghcr.io/${{ github.repository_owner }}/aionui:${{ steps.version.outputs.version }}-${{ matrix.suffix }}"
+          OUT="dist-docker/aionui-docker-${{ steps.version.outputs.version }}-linux-${{ matrix.suffix }}.tar"
+          docker save "$IMAGE" -o "$OUT"
+          sha256sum "$OUT" > "$OUT.sha256"
+          ls -lh dist-docker/*.tar dist-docker/*.tar.sha256
+
+      - name: Upload image tarball artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: docker-image-linux-${{ matrix.suffix }}
+          path: |
+            dist-docker/*.tar
+            dist-docker/*.tar.sha256
+          retention-days: 7
+
+  # 把两个架构的镜像合并成一个 multi-arch manifest 推到 GHCR
+  # （docker pull ghcr.io/<owner>/aionui:<version> 自动选架构）。
+  # 纯尽力而为：GHCR 推送失败不影响 Release 镜像 tar 产物。
+  docker-manifest:
+    name: Publish Multi-arch Docker Manifest
+    runs-on: ubuntu-latest
+    needs: docker-images
+    if: needs.code-quality.result == 'success' && (github.ref == 'refs/heads/dev' || (startsWith(github.ref, 'refs/tags/') && !contains(github.ref, '-dev-'))) && needs.docker-images.result == 'success'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Get version from package.json
+        id: version
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Log in to GHCR
+        id: ghcr_login
+        continue-on-error: true
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Create multi-arch manifest
+        if: steps.ghcr_login.outcome == 'success'
+        continue-on-error: true
+        run: |
+          IMAGE="ghcr.io/${{ github.repository_owner }}/aionui"
+          VERSION="${{ steps.version.outputs.version }}"
+          docker buildx imagetools create -t "$IMAGE:$VERSION" \
+            "$IMAGE:$VERSION-amd64" "$IMAGE:$VERSION-arm64"
+          # 仅正式 tag 发布时移动 latest
+          if [[ "$GITHUB_REF" == refs/tags/* && "$GITHUB_REF" != *-dev-* ]]; then
+            docker buildx imagetools create -t "$IMAGE:latest" \
+              "$IMAGE:$VERSION-amd64" "$IMAGE:$VERSION-arm64"
+          fi
+
+  # 自动重试 workflow 见 .github/workflows/auto-retry.yml
+  # 原因：GitHub 只允许对「已结束」的 run 调用 rerun API，在本 run 内部调用
+  # 必然返回 403 "This workflow is already running"，因此改为由 workflow_run 触发。
 
   # 自动创建tag（仅 dev 分支推送时）
   create-tag:
@@ -251,14 +368,16 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
 
   # 发布到 GitHub Releases
-  # PUBLISH_RELEASE 未设置（上游 AionUi）：跳过构建，但正式 tag 仍创建纯源码 draft Release；
-  # PUBLISH_RELEASE=true（下游签名构建）：与之前一致，要求构建成功并附带安装包。
+  # Fork 说明：已移除 PUBLISH_RELEASE 开关。正式 tag 推送一律走完整构建，并把安装包附加到
+  # Release；构建或打包失败时不再产出「空 Release」，避免误以为发版成功。
+  # 产物包含：桌面安装包、web-cli tarball、install-web.sh、Docker 镜像 tar（x64/arm64）。
   release:
     name: Create Release
     runs-on: ubuntu-latest
-    needs: [code-quality, build-pipeline, create-tag, pack-web-cli]
+    needs: [code-quality, build-pipeline, create-tag, pack-web-cli, docker-images]
     # Tag 推送时 create-tag 会被跳过，所以需要检查两种情况（排除 -dev- tag 避免重复）
-    if: always() && needs.code-quality.result == 'success' && (needs.create-tag.result == 'success' || (startsWith(github.ref, 'refs/tags/') && !contains(github.ref, '-dev-'))) && (vars.PUBLISH_RELEASE != 'true' || (needs.build-pipeline.result == 'success' && needs.pack-web-cli.result == 'success'))
+    # docker-manifest 是尽力而为的 GHCR 推送，不作为 Release 的前置条件
+    if: always() && needs.code-quality.result == 'success' && (needs.create-tag.result == 'success' || (startsWith(github.ref, 'refs/tags/') && !contains(github.ref, '-dev-'))) && needs.build-pipeline.result == 'success' && needs.pack-web-cli.result == 'success' && needs.docker-images.result == 'success'
     # dev 分支使用 dev-release 环境，正式 tag 使用 release 环境
     environment: ${{ needs.create-tag.outputs.is_dev == 'true' && 'dev-release' || 'release' }}
 
@@ -285,15 +404,16 @@ jobs:
           echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
           echo "is_dev=$IS_DEV" >> $GITHUB_OUTPUT
 
-      # 仅下游签名构建有安装包产物；上游 AionUi 发布纯源码 Release，无产物可下载
-      - name: Download all build artifacts
-        if: vars.PUBLISH_RELEASE == 'true'
-        uses: actions/download-artifact@v7
-        with:
-          path: build-artifacts
+      # 安装包产物来自 build-pipeline / pack-web-cli / docker-images 各 job。
+      # 改为逐 artifact 下载 + 独立重试（见脚本内注释）：原 download-artifact@v7
+      # 不带 name 一次性并发拉全部 16 个产物，任一失败即整体中止且不报具体是哪个，
+      # 还会拉两个用不上的 .dockerbuild 元数据产物。
+      - name: Download release artifacts (resilient per-artifact)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/download-release-artifacts.sh "${GITHUB_RUN_ID}" build-artifacts
 
       - name: Prepare release assets (normalize updater metadata)
-        if: vars.PUBLISH_RELEASE == 'true'
         shell: bash
         run: bash scripts/prepare-release-assets.sh build-artifacts release-assets
 
@@ -310,6 +430,7 @@ jobs:
             release-assets/**/*.zip
             release-assets/**/*.yml
             release-assets/**/*.tar.gz
+            release-assets/**/*.tar
             release-assets/**/*.sha256
             release-assets/install-web.sh
           generate_release_notes: true
