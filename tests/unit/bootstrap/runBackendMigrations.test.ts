@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { IMAGE_GEN_ENV_KEYS } from '@/common/config/imageGenerationMcpEnv';
 import { BUILTIN_IMAGE_GEN_NAME, type IMcpServer, type IProvider } from '@/common/config/storage';
+import { BUILTIN_SEARXNG_NAME, DEFAULT_SEARXNG_URL, SEARXNG_URL_ENV_KEY } from '@/process/resources/builtinMcp/constants';
 import { resolveImageGenerationMigrationConfig, runBackendMigrations } from '@/process/utils/runBackendMigrations';
 
 const {
@@ -214,5 +215,56 @@ describe('runBackendMigrations', () => {
       'yes',
       'yes'
     );
+  });
+
+  it('registers the built-in searxng MCP server on bootstrap', async () => {
+    listServersMock.mockResolvedValue([]);
+
+    await runBackendMigrations(configFile as never);
+
+    expect(batchImportServersMock).toHaveBeenCalled();
+    const imported = batchImportServersMock.mock.calls[0][0].servers as IMcpServer[];
+    const searxng = imported.find((server) => server.name === BUILTIN_SEARXNG_NAME);
+
+    expect(searxng).toBeDefined();
+    expect(searxng?.builtin).toBe(true);
+    expect(searxng?.enabled).toBe(true);
+    expect(searxng?.transport).toEqual({
+      type: 'stdio',
+      command: 'node',
+      args: ['/mock/builtin-mcp-searxng.js'],
+      env: { [SEARXNG_URL_ENV_KEY]: DEFAULT_SEARXNG_URL },
+    });
+  });
+
+  it('repairs a stale searxng MCP script path while preserving the custom endpoint', async () => {
+    const staleSearxng: IMcpServer = {
+      id: 'searxng-id',
+      name: BUILTIN_SEARXNG_NAME,
+      description: 'Built-in searxng search',
+      enabled: true,
+      builtin: true,
+      transport: {
+        type: 'stdio',
+        command: 'node',
+        args: ['/old/app/builtin-mcp-searxng.js'],
+        env: { [SEARXNG_URL_ENV_KEY]: 'http://10.0.0.9:3826' },
+      },
+      created_at: 1,
+      updated_at: 1,
+      original_json: '{}',
+    };
+    listServersMock.mockResolvedValue([imageServer(), staleSearxng]);
+
+    await runBackendMigrations(configFile as never);
+
+    const searxngUpdate = updateServerMock.mock.calls.find(([payload]) => payload.id === 'searxng-id');
+    expect(searxngUpdate).toBeDefined();
+    expect(searxngUpdate?.[0].data.transport).toEqual({
+      type: 'stdio',
+      command: 'node',
+      args: ['/mock/builtin-mcp-searxng.js'],
+      env: { [SEARXNG_URL_ENV_KEY]: 'http://10.0.0.9:3826' },
+    });
   });
 });

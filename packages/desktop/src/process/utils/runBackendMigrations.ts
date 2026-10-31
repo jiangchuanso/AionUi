@@ -17,6 +17,12 @@ import {
   type ImageGenerationMcpEnvResolveResult,
 } from '@/common/config/imageGenerationMcpEnv';
 import { BUILTIN_IMAGE_GEN_NAME, type IMcpServer, type IProvider } from '@/common/config/storage';
+import {
+  BUILTIN_SEARXNG_NAME,
+  BUILTIN_SEARXNG_SCRIPT,
+  DEFAULT_SEARXNG_URL,
+  SEARXNG_URL_ENV_KEY,
+} from '../resources/builtinMcp/constants';
 import { getBuiltinMcpScriptPath, type ProcessConfig as ProcessConfigType } from './initStorage';
 import { migrateAssistantsToBackend } from './migrateAssistants';
 
@@ -201,6 +207,50 @@ function buildBuiltinBrowserServer(): McpImportServer {
   };
 }
 
+/**
+ * 内置 SearXNG 兼容检索 MCP。
+ *
+ * 默认开启、指向本机 3826 端口的检索服务；地址可通过系统环境变量
+ * `AIONUI_SEARXNG_URL` 覆盖（注册时写入 transport.env，也可在设置里改）。
+ *
+ * The built-in SearXNG-compatible search MCP. Enabled by default and pointed at the
+ * local retrieval service on port 3826; the endpoint can be overridden via the
+ * `AIONUI_SEARXNG_URL` environment variable (baked into `transport.env` on first
+ * registration, and editable in Settings → Tools).
+ */
+function resolveSearxngBaseUrl(): string {
+  const raw = (process.env[SEARXNG_URL_ENV_KEY] || DEFAULT_SEARXNG_URL).trim();
+  return (raw || DEFAULT_SEARXNG_URL).replace(/\/+$/, '');
+}
+
+function buildBuiltinSearxngServer(): McpImportServer {
+  const scriptPath = getBuiltinMcpScriptPath(BUILTIN_SEARXNG_SCRIPT);
+  const env = { [SEARXNG_URL_ENV_KEY]: resolveSearxngBaseUrl() };
+  const serverConfig = {
+    command: 'node',
+    args: [scriptPath],
+    env,
+  };
+
+  return {
+    name: BUILTIN_SEARXNG_NAME,
+    description:
+      'Built-in SearXNG-compatible search tool (web_search). Queries the configured search endpoint ' +
+      'and returns ranked titles, URLs and snippets. Defaults to the local service on http://localhost:3826.',
+    // 默认开启：装好即可被 Agent 调用；端点地址可在设置 → Tools 中修改
+    // Enabled by default: usable out of the box; the endpoint is editable in Settings → Tools.
+    enabled: true,
+    builtin: true,
+    transport: {
+      type: 'stdio',
+      command: serverConfig.command,
+      args: serverConfig.args,
+      env,
+    },
+    original_json: JSON.stringify({ mcpServers: { [BUILTIN_SEARXNG_NAME]: serverConfig } }, null, 2),
+  };
+}
+
 function buildDefaultMcpServers(): McpImportServer[] {
   const chromeConfig = {
     command: 'npx',
@@ -221,6 +271,7 @@ function buildDefaultMcpServers(): McpImportServer[] {
       original_json: JSON.stringify({ mcpServers: { [BUILTIN_CHROME_DEVTOOLS_NAME]: chromeConfig } }, null, 2),
     },
     buildBuiltinBrowserServer(),
+    buildBuiltinSearxngServer(),
   ];
 }
 
@@ -337,6 +388,42 @@ async function ensureBootstrapMcpServersInDb(configFile: ConfigFile): Promise<vo
   const refreshedServers = await mcpService.listServers.invoke();
   const chromeDevtoolsServer = refreshedServers.find((server) => server.name === BUILTIN_CHROME_DEVTOOLS_NAME);
   await ensureBuiltinChromeDevtoolsAvailability(chromeDevtoolsServer);
+
+  /**
+   * 自愈 searxng MCP 的脚本绝对路径（同浏览器 MCP）。
+   *
+   * 注册时把脚本路径写进 transport.args，只在首次插入时写一次；应用被移动/重装后
+   * 路径失效，而按名字判断「已注册」使它不会被重新插入。每次启动对齐一次 args，
+   * 但保留用户自定义的 env（端点地址）。
+   *
+   * Self-heal the searxng MCP script path (same rationale as the browser MCP): the
+   * absolute path is only written on first insert, so it goes stale when the app
+   * moves. Reconcile `args` on every startup while preserving user-customised `env`.
+   */
+  const existingSearxngServer = refreshedServers.find((server) => server.name === BUILTIN_SEARXNG_NAME);
+  if (existingSearxngServer && existingSearxngServer.transport.type === 'stdio') {
+    const desiredSearxngServer = buildBuiltinSearxngServer();
+    const desiredArgs =
+      desiredSearxngServer.transport.type === 'stdio' ? (desiredSearxngServer.transport.args ?? []) : [];
+    if (!areStringArraysEqual(existingSearxngServer.transport.args, desiredArgs)) {
+      const updatedTransport = {
+        ...existingSearxngServer.transport,
+        args: desiredArgs,
+      };
+      console.info('[Migration] searxng MCP script path drifted, repairing, server id: %s', existingSearxngServer.id);
+      await mcpService.updateServer.invoke({
+        id: existingSearxngServer.id,
+        data: {
+          transport: updatedTransport,
+          original_json: buildOriginalJsonFromTransport({
+            name: existingSearxngServer.name,
+            description: existingSearxngServer.description,
+            transport: updatedTransport,
+          }),
+        },
+      });
+    }
+  }
 
   if (
     imageEnvResolution.ok === true &&
