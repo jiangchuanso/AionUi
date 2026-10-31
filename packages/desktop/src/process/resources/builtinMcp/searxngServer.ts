@@ -70,7 +70,9 @@ Notes:
       mode: z
         .enum(['hybrid', 'exact', 'phrase'])
         .optional()
-        .describe('Search mode. hybrid (default) balances coverage and relevance; exact enforces every condition; phrase treats the whole query as one phrase.'),
+        .describe(
+          'Search mode. hybrid (default) balances coverage and relevance; exact enforces every condition; phrase treats the whole query as one phrase.'
+        ),
       top_k: z
         .number()
         .int()

@@ -2,7 +2,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { IMAGE_GEN_ENV_KEYS } from '@/common/config/imageGenerationMcpEnv';
 import { BUILTIN_IMAGE_GEN_NAME, type IMcpServer, type IProvider } from '@/common/config/storage';
-import { BUILTIN_SEARXNG_NAME, DEFAULT_SEARXNG_URL, SEARXNG_URL_ENV_KEY } from '@/process/resources/builtinMcp/constants';
+import {
+  BUILTIN_SEARXNG_NAME,
+  DEFAULT_SEARXNG_URL,
+  SEARXNG_URL_ENV_KEY,
+} from '@/process/resources/builtinMcp/constants';
 import { resolveImageGenerationMigrationConfig, runBackendMigrations } from '@/process/utils/runBackendMigrations';
 
 const {
