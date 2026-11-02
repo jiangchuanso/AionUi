@@ -96,6 +96,7 @@ import { ipcBridge } from '@/common';
 import { repairAllCronJobTimeZonesOnce } from '@renderer/pages/cron/repairCronJobTimeZone';
 import { bootstrapRendererConfig } from '@renderer/services/bootstrapRenderer';
 import { ensureWebBuiltinAssistantDefaults } from '@renderer/services/webBuiltinAssistantDefaults';
+import { ensureWebBuiltinMcpDefaults } from '@renderer/services/webBuiltinMcpDefaults';
 
 // Components and utilities
 import BackendStartingView from './components/layout/BackendStartingView';
@@ -354,11 +355,12 @@ const Main = () => {
     void repairAllCronJobTimeZonesOnce();
   }, [ready]);
 
-  // WebUI: one-shot "all built-in assistants/skills on" bootstrap per account.
-  // Desktop runs the equivalent migration in the Electron main process instead.
+  // WebUI: one-shot per-account bootstraps. Desktop runs the equivalent
+  // migrations in the Electron main process instead.
   useEffect(() => {
     if (!ready || status !== 'authenticated') return;
     void ensureWebBuiltinAssistantDefaults();
+    void ensureWebBuiltinMcpDefaults();
   }, [ready, status]);
 
   if (!ready || !configReady) {

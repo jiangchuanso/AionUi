@@ -31,6 +31,10 @@ type SearxngResult = {
   content?: string;
   snippet?: string;
   engine?: string;
+  /** Stable chunk id ("doc:index") — dedupes hits that share a URL/section. */
+  chunk_id?: string;
+  /** Engine score; higher is better and matches the returned order. */
+  score?: number;
 };
 
 function formatResult(result: SearxngResult, index: number): string {
@@ -39,6 +43,7 @@ function formatResult(result: SearxngResult, index: number): string {
   const snippet = (result.content || result.snippet || '').trim();
   const lines = [`${index}. ${title}`];
   if (url) lines.push(`   URL: ${url}`);
+  if (result.chunk_id) lines.push(`   ID: ${result.chunk_id}`);
   if (snippet) lines.push(`   ${snippet}`);
   return lines.join('\n');
 }
@@ -62,11 +67,23 @@ async function main() {
 
 Use this tool whenever the user asks to look something up, find references, or search documents/knowledge that is not already in the conversation.
 
+Query syntax (mirrors the endpoint's parser):
+- Boolean: AND (or &&), OR (or ||), NOT. Adjacent terms are AND-ed. Parentheses group sub-expressions.
+- Quoted phrases: "exact phrase" (order-sensitive).
+- Exclusion: a leading - (or full-width －) excludes a term, e.g. 发动机 -滑油.
+- Field filters: filetype:pdf (alias ext:docx) restricts by file type; intitle:keyword restricts to section headings.
+- Full-width delimiters （） and “” are accepted; an uppercase operator between two CJK characters is split out (e.g. 发动机OR滑油).
+- + and - inside a term are NOT operators, so RAID-3260-10i and C++ stay searchable.
+
 Notes:
 - The endpoint defaults to a local SearXNG-compatible service, so results reflect that service's index.
-- The query supports boolean operators (AND / OR / NOT), quoted phrases and parentheses.`,
+- number_of_results is the total hit count (not the page size). strict_count is the number matching ALL conditions — when it is much smaller than number_of_results the query is broad, so switch to exact mode or tighten it.`,
     {
-      query: z.string().describe('Search keywords. Supports AND / OR / NOT, "quoted phrases" and parentheses.'),
+      query: z
+        .string()
+        .describe(
+          'Search keywords. Supports AND (&&), OR (||), NOT, "quoted phrases", parentheses, a leading - exclusion (e.g. 发动机 -滑油), and field filters filetype:/ext:/intitle:.'
+        ),
       mode: z
         .enum(['hybrid', 'exact', 'phrase'])
         .optional()
@@ -117,6 +134,7 @@ Notes:
         const data = (await response.json()) as {
           results?: SearxngResult[];
           number_of_results?: number;
+          strict_count?: number | null;
         };
         const results = Array.isArray(data.results) ? data.results : [];
 
@@ -127,13 +145,18 @@ Notes:
         }
 
         const total = typeof data.number_of_results === 'number' ? data.number_of_results : results.length;
+        const strict = typeof data.strict_count === 'number' ? data.strict_count : undefined;
+        const breadth =
+          strict !== undefined && strict < total
+            ? ` [strict matches: ${strict}; query is broad — use exact mode or tighten it]`
+            : '';
         const body = results.map((result, index) => formatResult(result, index + 1)).join('\n\n');
 
         return {
           content: [
             {
               type: 'text' as const,
-              text: `Found ${total} result(s) for "${query}" (showing ${results.length}):\n\n${body}`,
+              text: `Found ${total} result(s) for "${query}" (showing ${results.length})${breadth}:\n\n${body}`,
             },
           ],
         };

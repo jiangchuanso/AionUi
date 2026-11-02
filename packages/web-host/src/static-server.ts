@@ -15,6 +15,7 @@ import { networkInterfaces } from 'node:os';
 import net, { type Socket } from 'node:net';
 import serveHandler from 'serve-handler';
 import { handleAdminApiRequest } from './admin-api.js';
+import type { BuiltinMcpCatalog } from './builtin-mcp.js';
 import type { AdminCliConfig } from './types.js';
 
 export type StaticServerOptions = {
@@ -27,6 +28,12 @@ export type StaticServerOptions = {
    * CLI. Omit and those routes answer 501 (frontend-only deployments).
    */
   adminCli?: AdminCliConfig;
+  /**
+   * Built-in MCP servers (absolute script paths + default env) the renderer
+   * registers per signed-in user. Served on `/api/webhost/builtin-mcp`, which
+   * web-host answers itself instead of proxying to aioncore.
+   */
+  builtinMcp?: BuiltinMcpCatalog;
 };
 
 export type StaticServerHandle = {
@@ -203,6 +210,15 @@ export async function startStaticServer(opts: StaticServerOptions): Promise<Stat
       // (aioncore gates its own user endpoints to local mode). Must be checked
       // before the generic /api/* proxy below.
       if (await handleAdminApiRequest(req, res, { backendPort: opts.backendPort, adminCli: opts.adminCli })) {
+        return;
+      }
+
+      // /api/webhost/* — owned by web-host itself (must precede the /api proxy).
+      // The renderer reads the built-in MCP catalog here so it can register the
+      // servers per signed-in user through the normal aioncore API.
+      if (req.method === 'GET' && req.url === '/api/webhost/builtin-mcp') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(opts.builtinMcp ?? { servers: [] }));
         return;
       }
 
