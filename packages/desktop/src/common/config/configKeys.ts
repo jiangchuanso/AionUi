@@ -48,6 +48,13 @@ export type ConfigKeyMap = {
   'migration.providersMigrated_v1': boolean | undefined;
   'migration.assistantsMigrated_v1': boolean | undefined;
   'migration.builtinAllEnabled_v1': boolean | undefined;
+  /**
+   * WebUI-only one-shot flag for the built-in searxng MCP bootstrap. Lives in the
+   * backend client-settings store (per account) since the WebUI has no local
+   * config file. Kept separate from `migration.builtinAllEnabled_v1` so the two
+   * bootstraps can be rolled out independently.
+   */
+  'migration.builtinMcpSearxng_v1': boolean | undefined;
 };
 
 export type ConfigKey = keyof ConfigKeyMap;
