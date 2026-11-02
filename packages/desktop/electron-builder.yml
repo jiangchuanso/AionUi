@@ -249,6 +249,7 @@ asarUnpack:
   # Builtin MCP server scripts must be unpacked so external node processes can execute them
   - 'out/main/builtin-mcp-image-gen.js'
   - 'out/main/builtin-mcp-browser.js'
+  - 'out/main/builtin-mcp-searxng.js'
   - 'out/main/team-mcp-stdio.js'
 
 # Compression level: normal for faster builds, maximum for smallest size

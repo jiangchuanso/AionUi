@@ -176,6 +176,24 @@ describe('release packaging configuration', () => {
     expect(workflow).not.toContain('out/AionUi-*-win32-*.zip');
   });
 
+  it('unpacks every builtin MCP entry script that external node processes execute', () => {
+    const config = readProjectFile('packages/desktop/electron-builder.yml');
+    const block = yamlBlock(config, 'asarUnpack');
+
+    // The packaged path is rewritten to app.asar.unpacked, so a script missing
+    // from this list resolves to a file that does not exist and the MCP server
+    // can never start.
+    const entryScripts = [
+      'builtin-mcp-image-gen.js',
+      'builtin-mcp-browser.js',
+      'builtin-mcp-searxng.js',
+      'team-mcp-stdio.js',
+    ];
+    for (const script of entryScripts) {
+      expect(block).toContain(`out/main/${script}`);
+    }
+  });
+
   it('retries mac prepackaged builds with both dmg and zip targets', () => {
     const script = readProjectFile('scripts/build-with-builder.js');
 

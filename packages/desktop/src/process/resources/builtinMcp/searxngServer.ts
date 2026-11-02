@@ -77,9 +77,9 @@ Notes:
         .number()
         .int()
         .positive()
-        .max(50)
+        .max(20)
         .optional()
-        .describe('Maximum number of results to return. Defaults to 10.'),
+        .describe('Maximum number of results to return (1-20). Defaults to 10.'),
       snippet_max_chars: z
         .number()
         .int()
