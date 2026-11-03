@@ -205,7 +205,7 @@ describe('release packaging configuration', () => {
     expect(script).toContain("path.join(tarballContentDir, 'out/main')");
     // The CommonJS pin must ship alongside the script, otherwise the web-host
     // root "type": "module" misparses the CJS bundle as ESM.
-    expect(script).toContain("out/main/package.json");
+    expect(script).toContain('out/main/package.json');
   });
 
   it('builds the builtin MCP scripts itself instead of trusting the caller', () => {

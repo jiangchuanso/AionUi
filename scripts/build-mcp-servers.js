@@ -51,10 +51,7 @@ async function main() {
   // type:commonjs makes Node use the nearest package.json up the directory tree,
   // so the original .js paths keep working without renaming to .cjs.
   // Harmless for desktop, whose main bundle in out/main is also CJS.
-  await fs.writeFile(
-    path.join(ROOT, 'out/main/package.json'),
-    JSON.stringify({ type: 'commonjs' }, null, 2) + '\n'
-  );
+  await fs.writeFile(path.join(ROOT, 'out/main/package.json'), JSON.stringify({ type: 'commonjs' }, null, 2) + '\n');
 }
 
 main().catch((err) => {

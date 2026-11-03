@@ -251,7 +251,7 @@ asarUnpack:
   - 'out/main/builtin-mcp-browser.js'
   - 'out/main/builtin-mcp-searxng.js'
   - 'out/main/team-mcp-stdio.js'
-  - 'out/main/package.json'  # pins out/main to CommonJS (see scripts/build-mcp-servers.js)
+  - 'out/main/package.json' # pins out/main to CommonJS (see scripts/build-mcp-servers.js)
 
 # Compression level: normal for faster builds, maximum for smallest size
 # Note: electron-builder doesn't support YAML template syntax for env vars
