@@ -102,6 +102,12 @@ if (!fs.existsSync(mcpScriptSrc)) {
 const mcpScriptDest = path.join(tarballContentDir, 'out/main');
 fs.mkdirSync(mcpScriptDest, { recursive: true });
 fs.cpSync(mcpScriptSrc, path.join(mcpScriptDest, 'builtin-mcp-searxng.js'));
+// Ship the CommonJS pin so the script isn't misparsed as ESM under the web-host
+// root package.json ("type": "module"). Emitted by scripts/build-mcp-servers.js.
+const mcpPkgSrc = path.join(projectRoot, 'out/main/package.json');
+if (fs.existsSync(mcpPkgSrc)) {
+  fs.cpSync(mcpPkgSrc, path.join(mcpScriptDest, 'package.json'));
+}
 
 // 7. Copy bundled-aioncore
 const backendSrc = path.join(projectRoot, 'resources/bundled-aioncore', `${platform}-${arch}`);

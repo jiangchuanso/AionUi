@@ -188,6 +188,7 @@ describe('release packaging configuration', () => {
       'builtin-mcp-browser.js',
       'builtin-mcp-searxng.js',
       'team-mcp-stdio.js',
+      'package.json',
     ];
     for (const script of entryScripts) {
       expect(block).toContain(`out/main/${script}`);
@@ -202,6 +203,9 @@ describe('release packaging configuration', () => {
     // (documented in README), so it must exist in the tarball.
     expect(script).toContain("path.join(projectRoot, 'out/main/builtin-mcp-searxng.js')");
     expect(script).toContain("path.join(tarballContentDir, 'out/main')");
+    // The CommonJS pin must ship alongside the script, otherwise the web-host
+    // root "type": "module" misparses the CJS bundle as ESM.
+    expect(script).toContain("out/main/package.json");
   });
 
   it('builds the builtin MCP scripts itself instead of trusting the caller', () => {

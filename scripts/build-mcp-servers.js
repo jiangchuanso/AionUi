@@ -13,6 +13,7 @@
 
 const esbuild = require('esbuild');
 const path = require('path');
+const fs = require('fs/promises');
 
 const ROOT = path.resolve(__dirname, '..');
 
@@ -43,6 +44,17 @@ async function main() {
       outfile: path.join(ROOT, 'out/main/builtin-mcp-searxng.js'),
     }),
   ]);
+
+  // Pin out/main to CommonJS. The web-host deployment's root package.json sets
+  // "type": "module", which would otherwise make Node parse these CJS bundles as
+  // ESM and crash with "require is not defined". A local package.json with
+  // type:commonjs makes Node use the nearest package.json up the directory tree,
+  // so the original .js paths keep working without renaming to .cjs.
+  // Harmless for desktop, whose main bundle in out/main is also CJS.
+  await fs.writeFile(
+    path.join(ROOT, 'out/main/package.json'),
+    JSON.stringify({ type: 'commonjs' }, null, 2) + '\n'
+  );
 }
 
 main().catch((err) => {
