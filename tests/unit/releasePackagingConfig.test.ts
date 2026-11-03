@@ -204,6 +204,14 @@ describe('release packaging configuration', () => {
     expect(script).toContain("path.join(tarballContentDir, 'out/main')");
   });
 
+  it('builds the builtin MCP scripts itself instead of trusting the caller', () => {
+    const script = readProjectFile('scripts/pack-web-cli.js');
+
+    // electron-vite's MCP plugin only runs in development mode, so the CI
+    // production build never emits out/main/builtin-mcp-*.js on its own.
+    expect(script).toContain('scripts/build-mcp-servers.js');
+  });
+
   it('retries mac prepackaged builds with both dmg and zip targets', () => {
     const script = readProjectFile('scripts/build-with-builder.js');
 

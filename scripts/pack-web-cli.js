@@ -84,6 +84,14 @@ if (fs.existsSync(rendererOutDir)) {
 // during the electron-vite main build; the tarball keeps the same relative path
 // (`<root>/out/main/builtin-mcp-searxng.js`) users are told to reference.
 console.log('6b. Copying builtin MCP server script...');
+// electron-vite only runs its MCP build plugin in development mode, so a plain
+// `electron-vite build` (production, used by CI) never emits out/main/builtin-mcp-*.js.
+// Bundle them here so the tarball does not depend on how the renderer/main build was invoked
+// (scripts/build-with-builder.js does the same after its desktop build).
+execSync(`node "${path.join(projectRoot, 'scripts/build-mcp-servers.js')}"`, {
+  cwd: projectRoot,
+  stdio: 'inherit',
+});
 const mcpScriptSrc = path.join(projectRoot, 'out/main/builtin-mcp-searxng.js');
 if (!fs.existsSync(mcpScriptSrc)) {
   throw new Error(
