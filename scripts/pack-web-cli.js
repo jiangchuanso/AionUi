@@ -78,6 +78,23 @@ if (fs.existsSync(rendererOutDir)) {
   throw new Error(`Desktop renderer output not found at ${rendererOutDir}. Run bunx electron-vite build first.`);
 }
 
+// 6b. Ship the standalone SearXNG MCP server script.
+// It is NOT registered automatically (users add it via Settings → Tools → JSON
+// import, see README). Emitted by scripts/build-mcp-servers.js into out/main/
+// during the electron-vite main build; the tarball keeps the same relative path
+// (`<root>/out/main/builtin-mcp-searxng.js`) users are told to reference.
+console.log('6b. Copying builtin MCP server script...');
+const mcpScriptSrc = path.join(projectRoot, 'out/main/builtin-mcp-searxng.js');
+if (!fs.existsSync(mcpScriptSrc)) {
+  throw new Error(
+    `Builtin MCP script not found at ${mcpScriptSrc}. ` +
+      'Run bunx electron-vite build first (scripts/build-mcp-servers.js emits it).'
+  );
+}
+const mcpScriptDest = path.join(tarballContentDir, 'out/main');
+fs.mkdirSync(mcpScriptDest, { recursive: true });
+fs.cpSync(mcpScriptSrc, path.join(mcpScriptDest, 'builtin-mcp-searxng.js'));
+
 // 7. Copy bundled-aioncore
 const backendSrc = path.join(projectRoot, 'resources/bundled-aioncore', `${platform}-${arch}`);
 const backendDest = path.join(tarballContentDir, 'bundled-aioncore', `${platform}-${arch}`);

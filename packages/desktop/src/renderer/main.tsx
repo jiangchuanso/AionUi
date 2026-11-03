@@ -96,7 +96,6 @@ import { ipcBridge } from '@/common';
 import { repairAllCronJobTimeZonesOnce } from '@renderer/pages/cron/repairCronJobTimeZone';
 import { bootstrapRendererConfig } from '@renderer/services/bootstrapRenderer';
 import { ensureWebBuiltinAssistantDefaults } from '@renderer/services/webBuiltinAssistantDefaults';
-import { ensureWebBuiltinMcpDefaults } from '@renderer/services/webBuiltinMcpDefaults';
 
 // Components and utilities
 import BackendStartingView from './components/layout/BackendStartingView';
@@ -360,7 +359,6 @@ const Main = () => {
   useEffect(() => {
     if (!ready || status !== 'authenticated') return;
     void ensureWebBuiltinAssistantDefaults();
-    void ensureWebBuiltinMcpDefaults();
   }, [ready, status]);
 
   if (!ready || !configReady) {

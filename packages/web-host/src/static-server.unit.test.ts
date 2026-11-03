@@ -420,45 +420,4 @@ describe('static-server', () => {
     expect(typeof h2.networkUrl === 'string' || h2.networkUrl === undefined).toBe(true);
     await h2.stop();
   });
-
-  it('/api/webhost/builtin-mcp is served by web-host, not proxied to backend', async () => {
-    const backend = await startMockBackend((_req, res) => {
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ proxied: true }));
-    });
-    stopBackend = backend.close;
-    const builtinMcp = {
-      servers: [
-        {
-          name: 'searxng',
-          description: 'Default MCP server: searxng-compatible web search',
-          enabled: true,
-          builtin: true,
-          transport: {
-            type: 'stdio' as const,
-            command: 'node',
-            args: ['/app/out/main/builtin-mcp-searxng.js'],
-            env: { AIONUI_SEARXNG_URL: 'http://localhost:3826' },
-          },
-          original_json: '{}',
-        },
-      ],
-    };
-    handle = await startStaticServer({ staticDir, backendPort: backend.port, port: 0, builtinMcp });
-
-    const r = await fetch(`${handle.localUrl}/api/webhost/builtin-mcp`);
-    expect(r.status).toBe(200);
-    const json = (await r.json()) as { servers: Array<{ name: string }> };
-    expect(json.servers[0].name).toBe('searxng');
-  });
-
-  it('/api/webhost/builtin-mcp returns an empty catalog when none supplied', async () => {
-    const backend = await startMockBackend((_req, res) => res.end('nope'));
-    stopBackend = backend.close;
-    handle = await startStaticServer({ staticDir, backendPort: backend.port, port: 0 });
-
-    const r = await fetch(`${handle.localUrl}/api/webhost/builtin-mcp`);
-    expect(r.status).toBe(200);
-    expect(await r.json()).toEqual({ servers: [] });
-  });
 });

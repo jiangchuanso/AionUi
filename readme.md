@@ -312,6 +312,67 @@ _Your 24/7 AI assistant — access AionUi from any device, anywhere._
 
 > [Remote Internet Access Tutorial](https://github.com/iOfficeAI/AionUi/wiki/Remote-Internet-Access-Guide-Chinese)
 
+---
+
+## 🔌 SearXNG Search Tool (MCP, manual JSON import)
+
+AionUi does **not** register any MCP server automatically. The SearXNG-compatible
+`web_search` tool ships as a standalone script — add it once per account in
+**Settings → Tools → Add MCP Server**, which accepts a JSON config (the same
+`mcpServers` shape other MCP clients use).
+
+### 1. Find the script
+
+| Deployment      | Script path                                                                       |
+| --------------- | --------------------------------------------------------------------------------- |
+| `aionui-web`    | `<install dir>/out/main/builtin-mcp-searxng.js` (e.g. `~/.local/share/aionui-web`) |
+| Desktop (Linux) | `<install dir>/resources/app.asar.unpacked/out/main/builtin-mcp-searxng.js`        |
+| Desktop (Win)   | `%LOCALAPPDATA%\Programs\AionUi\resources\app.asar.unpacked\out\main\builtin-mcp-searxng.js` |
+
+The script is a self-contained bundle (MCP SDK + zod vendored) — no `npm install`
+and no package downloads.
+
+### 2. Paste this JSON
+
+Adjust the script path and the endpoint, then import it:
+
+```json
+{
+  "mcpServers": {
+    "searxng": {
+      "command": "node",
+      "args": ["/opt/aionui-web/out/main/builtin-mcp-searxng.js"],
+      "env": {
+        "AIONUI_SEARXNG_URL": "http://127.0.0.1:3826"
+      }
+    }
+  }
+}
+```
+
+### 3. Notes
+
+- **Node runtime — ships with AionUi, nothing to install.** The server runs on
+  AionCore's *managed Node runtime* (Node 24.x), bundled at
+  `bundled-aioncore/<platform>-<arch>/managed-resources/node/node-v24.11.0-*/bin/node`
+  and started with `--managed-resources-mode bundled`. Keep `command` exactly
+  `node`: AionCore routes `node` / `npm` / `npx` to that managed runtime and
+  never falls back to a Node on your `PATH`. If the Tools page reports "command
+  could not be prepared", set `command` to the absolute path of the bundled
+  binary instead (e.g.
+  `/opt/aionui-web/bundled-aioncore/linux-x64/managed-resources/node/node-v24.11.0-linux-x64/bin/node`),
+  which bypasses the managed-runtime lookup.
+- **`AIONUI_SEARXNG_URL`** is the base URL of a SearXNG-compatible endpoint
+  (`GET <url>/search?q=...&format=json`). It is read **when the server starts**,
+  and must be reachable from the machine running AionUi — inside Docker,
+  `127.0.0.1` is the container itself, use the host/LAN address instead. Omit the
+  variable to fall back to `http://localhost:3826`.
+- The server exposes one tool, **`web_search`** (supports AND/OR/NOT, quoted
+  phrases, `-exclusion`, `filetype:` / `intitle:` filters).
+- **There is no global on/off switch.** Pick `searxng` in the MCP selector on the
+  new-conversation screen (or set it as an assistant's default MCP); conversations
+  that already exist will not pick it up.
+
 ## ✨ Cowork in Action
 
 ### **Scheduled Tasks — Cowork on Autopilot**

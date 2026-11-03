@@ -1,4 +1,3 @@
-import { resolveBuiltinMcpCatalog } from './builtin-mcp.js';
 import type { WebHostOptions, WebHostHandle, AdminCliConfig } from './types.js';
 
 export type { AppMetadata, BackendBinaryResolver, WebHostOptions, WebHostHandle, AdminCliConfig } from './types.js';
@@ -83,9 +82,6 @@ export async function startWebHost(opts: WebHostOptions): Promise<WebHostHandle>
       port: opts.port,
       allowRemote: opts.allowRemote ?? false,
       ...(adminCli ? { adminCli } : {}),
-      // Resolved once at startup: the renderer pulls this over
-      // /api/webhost/builtin-mcp and registers the servers per user.
-      builtinMcp: resolveBuiltinMcpCatalog(opts.app.resourcesPath),
     });
   } catch (err) {
     // If static-server fails, clean up backend

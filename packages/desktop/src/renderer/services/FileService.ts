@@ -66,7 +66,8 @@ export interface UploadFileOptions {
  *
  * Works in both Electron (via `http://127.0.0.1:<backendPort>`) and WebUI
  * (same-origin reverse-proxied). Conversation-bound uploads go to the
- * workspace uploads directory; pre-conversation uploads go to temp storage.
+ * conversation workspace's `uploads/` directory; pre-conversation uploads go to
+ * the backend's upload staging area (never the OS temp directory).
  *
  * Field names match the backend contract exactly (snake_case): `file`,
  * `file_name` (optional), `conversation_id` (optional). The response is
@@ -355,11 +356,11 @@ class FileServiceClass {
    *
    * Every file is uploaded — even Electron OS drags that expose an absolute
    * `path`. The chat send contract sends attachments as `upload` refs, and the
-   * backend rejects any upload path that is not under its managed upload
-   * directory (`temp_dir/aionui/...`). Passing the raw device path (the old
-   * behaviour) now fails with "uploaded file path is outside the managed upload
-   * directory", so we always route through the upload endpoint to obtain a
-   * managed path.
+   * backend rejects any upload path that is not under its managed upload roots
+   * (the conversation workspace's `uploads/` directory, or the upload staging
+   * area). Passing the raw device path (the old behaviour) now fails with
+   * "uploaded file path is outside the managed upload directory", so we always
+   * route through the upload endpoint to obtain a managed path.
    */
   async processDroppedFiles(
     files: FileList,

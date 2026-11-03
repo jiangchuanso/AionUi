@@ -116,13 +116,4 @@ export const TEAM_MODE_ENABLED = true;
 // Shared between frontend (useModelProviderList) and backend (SystemActions).
 export const GOOGLE_AUTH_PROVIDER_ID = 'google-auth-gemini';
 
-// ===== 内置 MCP 相关常量 =====
 
-/**
- * 内置 searxng 兼容搜索 MCP 的注册名。
- *
- * 必须与 packages/desktop/src/process/resources/builtinMcp/constants.ts 中的
- * BUILTIN_SEARXNG_NAME 逐字一致：desktop 主进程迁移和 WebUI 前端 per-user 引导
- * 都按这个名字判断「是否已注册」，两处不一致会导致重复注册或永远不注册。
- */
-export const BUILTIN_SEARXNG_MCP_NAME = 'searxng';

@@ -194,6 +194,16 @@ describe('release packaging configuration', () => {
     }
   });
 
+  it('ships the searxng MCP script inside the aionui-web tarball', () => {
+    const script = readProjectFile('scripts/pack-web-cli.js');
+
+    // The script is never registered automatically — users add it through
+    // Settings → Tools with a JSON import that points at this relative path
+    // (documented in README), so it must exist in the tarball.
+    expect(script).toContain("path.join(projectRoot, 'out/main/builtin-mcp-searxng.js')");
+    expect(script).toContain("path.join(tarballContentDir, 'out/main')");
+  });
+
   it('retries mac prepackaged builds with both dmg and zip targets', () => {
     const script = readProjectFile('scripts/build-with-builder.js');
 
