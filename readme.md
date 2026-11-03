@@ -323,10 +323,10 @@ AionUi does **not** register any MCP server automatically. The SearXNG-compatibl
 
 ### 1. Find the script
 
-| Deployment      | Script path                                                                       |
-| --------------- | --------------------------------------------------------------------------------- |
-| `aionui-web`    | `<install dir>/out/main/builtin-mcp-searxng.js` (e.g. `~/.local/share/aionui-web`) |
-| Desktop (Linux) | `<install dir>/resources/app.asar.unpacked/out/main/builtin-mcp-searxng.js`        |
+| Deployment      | Script path                                                                                  |
+| --------------- | -------------------------------------------------------------------------------------------- |
+| `aionui-web`    | `<install dir>/out/main/builtin-mcp-searxng.js` (e.g. `~/.local/share/aionui-web`)           |
+| Desktop (Linux) | `<install dir>/resources/app.asar.unpacked/out/main/builtin-mcp-searxng.js`                  |
 | Desktop (Win)   | `%LOCALAPPDATA%\Programs\AionUi\resources\app.asar.unpacked\out\main\builtin-mcp-searxng.js` |
 
 The script is a self-contained bundle (MCP SDK + zod vendored) — no `npm install`
@@ -353,7 +353,7 @@ Adjust the script path and the endpoint, then import it:
 ### 3. Notes
 
 - **Node runtime — ships with AionUi, nothing to install.** The server runs on
-  AionCore's *managed Node runtime* (Node 24.x), bundled at
+  AionCore's _managed Node runtime_ (Node 24.x), bundled at
   `bundled-aioncore/<platform>-<arch>/managed-resources/node/node-v24.11.0-*/bin/node`
   and started with `--managed-resources-mode bundled`. Keep `command` exactly
   `node`: AionCore routes `node` / `npm` / `npx` to that managed runtime and
