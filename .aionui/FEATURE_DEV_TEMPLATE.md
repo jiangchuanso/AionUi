@@ -328,16 +328,18 @@ export const [功能名] = {
 ### 3.2 需要修改/新增的文件
 
 **主进程 (src/process/)**
-| 文件路径 | 操作 | 说明 |
-|----------|------|------|
-| src/process/bridge/exportBridge.ts | [x] 新增 | PDF 导出 IPC 通道定义 |
-| src/process/services/ExportService.ts | [x] 新增 | PDF 生成逻辑 |
+
+| 文件路径                              | 操作     | 说明                  |
+| ------------------------------------- | -------- | --------------------- |
+| src/process/bridge/exportBridge.ts    | [x] 新增 | PDF 导出 IPC 通道定义 |
+| src/process/services/ExportService.ts | [x] 新增 | PDF 生成逻辑          |
 
 **渲染进程 (src/renderer/)**
-| 文件路径 | 操作 | 说明 |
-|----------|------|------|
+
+| 文件路径                                                  | 操作     | 说明             |
+| --------------------------------------------------------- | -------- | ---------------- |
 | src/renderer/pages/conversation/components/ChatHeader.tsx | [x] 修改 | 添加导出下拉菜单 |
-| src/renderer/hooks/useExportPdf.ts | [x] 新增 | 导出功能 Hook |
+| src/renderer/hooks/useExportPdf.ts                        | [x] 新增 | 导出功能 Hook    |
 
 ### 4.1 功能验收
 

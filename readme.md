@@ -426,16 +426,16 @@ Adjust the script path and the SQLREST connection, then import it:
   server exposes only `sqlrest_call` (takes a `path` argument) so you can still
   reach any endpoint manually.
 - **Environment variables.**
-  | Variable               | Default                       | Purpose                                                     |
-  | ---------------------- | ----------------------------- | ----------------------------------------------------------- |
-  | `SQLREST_API_BASE_URL` | `http://localhost:8091/api`   | Base URL for executing APIs (the Gateway; use `:8092/api` for the Executor if you call it directly). |
-  | `SQLREST_TOKEN`        | _(empty)_                     | Bearer token for API auth (client token).                   |
-  | `SQLREST_MANAGER_URL`  | `http://localhost:8090`       | Manager base URL for enumerating APIs.                       |
-  | `SQLREST_MANAGER_TOKEN`| _(empty)_                     | Manager token (skips login).                                |
-  | `SQLREST_USERNAME`     | `admin`                       | Manager login username.                                     |
-  | `SQLREST_PASSWORD`     | `123456`                      | Manager login password.                                     |
-  | `SQLREST_PAGE_SIZE`    | `1000`                        | Page size for API enumeration.                              |
-  | `SQLREST_CACHE_SECONDS`| `300`                         | How long the enumerated tool list is cached.                |
+  | Variable                | Default                     | Purpose                                                                                              |
+  | ----------------------- | --------------------------- | ---------------------------------------------------------------------------------------------------- |
+  | `SQLREST_API_BASE_URL`  | `http://localhost:8091/api` | Base URL for executing APIs (the Gateway; use `:8092/api` for the Executor if you call it directly). |
+  | `SQLREST_TOKEN`         | _(empty)_                   | Bearer token for API auth (client token).                                                            |
+  | `SQLREST_MANAGER_URL`   | `http://localhost:8090`     | Manager base URL for enumerating APIs.                                                               |
+  | `SQLREST_MANAGER_TOKEN` | _(empty)_                   | Manager token (skips login).                                                                         |
+  | `SQLREST_USERNAME`      | `admin`                     | Manager login username.                                                                              |
+  | `SQLREST_PASSWORD`      | `123456`                    | Manager login password.                                                                              |
+  | `SQLREST_PAGE_SIZE`     | `1000`                      | Page size for API enumeration.                                                                       |
+  | `SQLREST_CACHE_SECONDS` | `300`                       | How long the enumerated tool list is cached.                                                         |
 - **Execution.** Each tool call is proxied to `{SQLREST_API_BASE_URL}/<path>`
   with the API method (GET/POST/PUT/DELETE). `params` become query string for
   GET and JSON body for writes; `body` overrides `params` for write methods. The

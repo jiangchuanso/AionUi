@@ -8,17 +8,17 @@
 
 ## 0. 现状调研结论（决定架构的关键事实）
 
-| #   | 事实                                                                                                                        | 出处                                                               | 对方案的影响                                                         |
+| # | 事实 | 出处 | 对方案的影响 |
 | --- | --------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ | -------------------------------------------------------------------- | ------------------------------------ | --------------------------------------------- |
-| F1  | `TeamTabsProvider` 已是每团队一实例，已有按 `team_id` 分键的 localStorage（`team-active-slot-*`、`team-assistant-order-*`） | `hooks/TeamTabsContext.tsx:72,30-49`                               | 身份色映射、视图模式复用同一层与同款 key                             |
-| F2  | 运行时事件 `ITeamAgentRuntimeStatusEvent` 带 `slot_id` + `status: 'pending'                                                 | 'ready'                                                            | 'failed'`                                                            | `common/types/team/teamTypes.ts:161` | **可单独判定 Leader ready** → warmup 闸门成立 |
-| F3  | `membershipMutationBusy` 是全员聚合忙碌，不区分 Leader                                                                      | `hooks/teamMembershipMutationBusy.ts:51`                           | warmup 需在 session 层额外派生 leader-ready                          |
-| F4  | teammate 消息只带 `senderConversationId`（无 `slot_id`）                                                                    | `chatLib.ts:117`、`MessageText.tsx:167`                            | **身份色按 conversation_id 取色**；需要 `conversationId→颜色` 的解析 |
-| F5  | 发送框预填走 `getSendBoxDraftHook(type)(conversation_id).mutate(d=>({...d,content}))`，SWR 同 key 自动同步到 SendBox        | `hooks/chat/useSendBoxDraft.ts:93`、`TeamChatEmptyState.tsx:76-89` | 「告诉 Leader」直接复用，无需新机制                                  |
-| F6  | 并行/全屏已有 `fullscreenSlotId`（TeamPageContent 本地 state）                                                              | `TeamPage.tsx:247,462-559`                                         | 升级为显式、持久化的 `viewMode`（不新造全屏逻辑）                    |
-| F7  | 空状态 Leader 分支有 subtitle + 3 建议卡；建议卡 onClick=`fillDraft(label)`                                                 | `TeamChatEmptyState.tsx:157-178`                                   | Leader 问候语替换 subtitle，纯文案                                   |
-| F8  | 选中/列高亮当前散落在 TeamPage（leader 硬编码 primary 色）与 TeamTabs（active class）                                       | `TeamPage.tsx:140-154`、`TeamTabs.tsx:107-108`                     | 身份色系统统一收口，替换这些硬编码                                   |
-| F9  | 成员实例键为 `slot_id`；`conversation_id` 与 `slot_id` 在 `assistants[]` 上一一对应                                         | `TeamPage.tsx:294`、teamTypes                                      | 建 `conversationId→slot_id` 索引即可打通消息与成员                   |
+| F1 | `TeamTabsProvider` 已是每团队一实例，已有按 `team_id` 分键的 localStorage（`team-active-slot-*`、`team-assistant-order-*`） | `hooks/TeamTabsContext.tsx:72,30-49` | 身份色映射、视图模式复用同一层与同款 key |
+| F2 | 运行时事件 `ITeamAgentRuntimeStatusEvent` 带 `slot_id` + `status: 'pending'                                                 | 'ready'                                                            | 'failed'` | `common/types/team/teamTypes.ts:161` | **可单独判定 Leader ready** → warmup 闸门成立 |
+| F3 | `membershipMutationBusy` 是全员聚合忙碌，不区分 Leader | `hooks/teamMembershipMutationBusy.ts:51` | warmup 需在 session 层额外派生 leader-ready |
+| F4 | teammate 消息只带 `senderConversationId`（无 `slot_id`） | `chatLib.ts:117`、`MessageText.tsx:167` | **身份色按 conversation_id 取色**；需要 `conversationId→颜色` 的解析 |
+| F5 | 发送框预填走 `getSendBoxDraftHook(type)(conversation_id).mutate(d=>({...d,content}))`，SWR 同 key 自动同步到 SendBox | `hooks/chat/useSendBoxDraft.ts:93`、`TeamChatEmptyState.tsx:76-89` | 「告诉 Leader」直接复用，无需新机制 |
+| F6 | 并行/全屏已有 `fullscreenSlotId`（TeamPageContent 本地 state） | `TeamPage.tsx:247,462-559` | 升级为显式、持久化的 `viewMode`（不新造全屏逻辑） |
+| F7 | 空状态 Leader 分支有 subtitle + 3 建议卡；建议卡 onClick=`fillDraft(label)` | `TeamChatEmptyState.tsx:157-178` | Leader 问候语替换 subtitle，纯文案 |
+| F8 | 选中/列高亮当前散落在 TeamPage（leader 硬编码 primary 色）与 TeamTabs（active class） | `TeamPage.tsx:140-154`、`TeamTabs.tsx:107-108` | 身份色系统统一收口，替换这些硬编码 |
+| F9 | 成员实例键为 `slot_id`；`conversation_id` 与 `slot_id` 在 `assistants[]` 上一一对应 | `TeamPage.tsx:294`、teamTypes | 建 `conversationId→slot_id` 索引即可打通消息与成员 |
 
 **架构含义**：身份色的「真源」是 `slot_id`（成员实例），但消息侧只认 `conversation_id`。因此身份色系统对外暴露两个查询：`colorOf(slot_id)` 与 `colorOfConversation(conversation_id)`，内部用 `assistants[]` 维护 `conversation_id→slot_id` 索引打通。
 

@@ -126,7 +126,9 @@ async function listPublishedApis(token) {
 }
 
 function sanitizeToolName(path) {
-  const cleaned = String(path).replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  const cleaned = String(path)
+    .replace(/[^a-zA-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
   return `sqlrest_${cleaned || 'api'}`;
 }
 
@@ -134,9 +136,7 @@ function buildApiTool(api) {
   const method = (api.method || 'GET').toUpperCase();
   const path = String(api.path || '').replace(/^\/+/, '');
   const name = sanitizeToolName(path);
-  const description = [api.name, api.description, `(${method} /api/${path})`]
-    .filter(Boolean)
-    .join(' — ');
+  const description = [api.name, api.description, `(${method} /api/${path})`].filter(Boolean).join(' — ');
   return {
     name,
     description,
@@ -215,8 +215,7 @@ async function loadTools() {
     let enumerated = false;
 
     try {
-      const hasManager =
-        !!config.managerToken || (config.username && config.password && config.managerUrl);
+      const hasManager = !!config.managerToken || (config.username && config.password && config.managerUrl);
       if (hasManager) {
         const token = await getManagerToken();
         const apis = await listPublishedApis(token);
@@ -283,10 +282,7 @@ async function callSqlrest(path, method, args) {
   }
 
   const res = await httpJson(url, { method: upperMethod, headers, body });
-  const text =
-    typeof res.data === 'string'
-      ? res.data
-      : JSON.stringify(res.data, null, 2);
+  const text = typeof res.data === 'string' ? res.data : JSON.stringify(res.data, null, 2);
   if (!res.ok) {
     return {
       isError: true,
