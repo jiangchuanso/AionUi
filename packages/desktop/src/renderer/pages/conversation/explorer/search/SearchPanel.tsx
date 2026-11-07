@@ -123,71 +123,70 @@ export const SearchPanel: React.FC<SearchPanelProps> = ({ roots, peNames, onReve
         {children}
       </div>
 
-      {active &&
-        owned && (
-          // ps-4px + 行自身 px-8px = 12px，与树、搜索框外框同一条基准线，
-          // 这样输入时结果列表顶掉树的一刻不会横向跳动。
-          // ps-4px plus each row's own px-8px lands on the same 12px baseline as the
-          // tree and the search box, so the list replacing the tree as you type does
-          // not shift sideways.
-          <div className='flex-1 min-h-0 overflow-auto ps-4px pe-4px'>
-            {showSearching && (
-              <div className='px-8px py-6px text-t-secondary text-13px'>
-                {t('conversation.explorer.search.searching')}
-              </div>
-            )}
-            {showEmpty && (
-              <div className='px-8px py-6px text-t-secondary text-13px'>{t('conversation.explorer.search.empty')}</div>
-            )}
-            {rows.map((hit) => (
-              <div
-                key={searchHitKey(hit)}
-                role='button'
-                tabIndex={0}
-                onClick={() => handleReveal(hit)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    handleReveal(hit);
-                  }
-                }}
-                className='group flex items-center gap-4px px-8px py-3px rd-4px cursor-pointer hover:bg-2 min-w-0'
-                title={hit.relative_path}
+      {active && owned && (
+        // ps-4px + 行自身 px-8px = 12px，与树、搜索框外框同一条基准线，
+        // 这样输入时结果列表顶掉树的一刻不会横向跳动。
+        // ps-4px plus each row's own px-8px lands on the same 12px baseline as the
+        // tree and the search box, so the list replacing the tree as you type does
+        // not shift sideways.
+        <div className='flex-1 min-h-0 overflow-auto ps-4px pe-4px'>
+          {showSearching && (
+            <div className='px-8px py-6px text-t-secondary text-13px'>
+              {t('conversation.explorer.search.searching')}
+            </div>
+          )}
+          {showEmpty && (
+            <div className='px-8px py-6px text-t-secondary text-13px'>{t('conversation.explorer.search.empty')}</div>
+          )}
+          {rows.map((hit) => (
+            <div
+              key={searchHitKey(hit)}
+              role='button'
+              tabIndex={0}
+              onClick={() => handleReveal(hit)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  handleReveal(hit);
+                }
+              }}
+              className='group flex items-center gap-4px px-8px py-3px rd-4px cursor-pointer hover:bg-2 min-w-0'
+              title={hit.relative_path}
+            >
+              <FileTypeIcon node={{ name: hit.name, relativePath: hit.relative_path, isFile: true }} />
+              {/* File names/paths are code-like: keep LTR under an RTL document. */}
+              <span dir='ltr' className='overflow-hidden text-ellipsis whitespace-nowrap flex-shrink-0 max-w-[45%]'>
+                {hit.name}
+              </span>
+              <span
+                dir='ltr'
+                className='overflow-hidden text-ellipsis whitespace-nowrap text-t-tertiary text-12px flex-1 min-w-0'
               >
-                <FileTypeIcon node={{ name: hit.name, relativePath: hit.relative_path, isFile: true }} />
-                {/* File names/paths are code-like: keep LTR under an RTL document. */}
-                <span dir='ltr' className='overflow-hidden text-ellipsis whitespace-nowrap flex-shrink-0 max-w-[45%]'>
-                  {hit.name}
-                </span>
-                <span
-                  dir='ltr'
-                  className='overflow-hidden text-ellipsis whitespace-nowrap text-t-tertiary text-12px flex-1 min-w-0'
-                >
-                  {peLabeledPath(hit.pe_id, hit.relative_path, peNames)}
-                </span>
-                {onAddHit && (
-                  <Button
-                    type='text'
-                    size='mini'
-                    className='flex-shrink-0 opacity-0 group-hover:opacity-100'
-                    icon={<Plus theme='outline' size='14' />}
-                    aria-label={t('conversation.explorer.contextMenu.addToChat')}
-                    title={t('conversation.explorer.contextMenu.addToChat')}
-                    onClick={(e) => {
-                      e.stopPropagation(); // explicit action — must not trigger row reveal
-                      onAddHit(hit);
-                    }}
-                  />
-                )}
-              </div>
-            ))}
-            {owned && view.limitReached && (
-              <div className='px-8px py-6px text-t-tertiary text-12px'>
-                {t('conversation.explorer.search.limitReached', { count: view.total })}
-              </div>
-            )}
-          </div>
-        )}
+                {peLabeledPath(hit.pe_id, hit.relative_path, peNames)}
+              </span>
+              {onAddHit && (
+                <Button
+                  type='text'
+                  size='mini'
+                  className='flex-shrink-0 opacity-0 group-hover:opacity-100'
+                  icon={<Plus theme='outline' size='14' />}
+                  aria-label={t('conversation.explorer.contextMenu.addToChat')}
+                  title={t('conversation.explorer.contextMenu.addToChat')}
+                  onClick={(e) => {
+                    e.stopPropagation(); // explicit action — must not trigger row reveal
+                    onAddHit(hit);
+                  }}
+                />
+              )}
+            </div>
+          ))}
+          {owned && view.limitReached && (
+            <div className='px-8px py-6px text-t-tertiary text-12px'>
+              {t('conversation.explorer.search.limitReached', { count: view.total })}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 };
