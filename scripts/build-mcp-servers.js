@@ -43,6 +43,11 @@ async function main() {
       entryPoints: [path.join(ROOT, 'packages/desktop/src/process/resources/builtinMcp/searxngServer.ts')],
       outfile: path.join(ROOT, 'out/main/builtin-mcp-searxng.js'),
     }),
+    esbuild.build({
+      ...SHARED_OPTIONS,
+      entryPoints: [path.join(ROOT, 'packages/desktop/src/process/resources/builtinMcp/sqlrestServer.ts')],
+      outfile: path.join(ROOT, 'out/main/builtin-mcp-sqlrest.js'),
+    }),
   ]);
 
   // Pin out/main to CommonJS. The web-host deployment's root package.json sets

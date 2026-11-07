@@ -14,8 +14,9 @@ import { ensureAdminPassword, generateInitialPassword, setAdminPasswordViaCli } 
 //   ├── package.json             ← for runtime version lookup
 //   ├── bundled-aioncore/<plat-arch>/aioncore[.exe]
 //   ├── static/                  ← SPA assets
-//   └── out/main/builtin-mcp-searxng.js  ← optional MCP script, imported manually
-//                                          via Settings → Tools (see README)
+//   └── out/main/builtin-mcp-*.js        ← optional MCP scripts (searxng, sqlrest),
+//                                          imported manually via Settings → Tools
+//                                          (see README)
 //
 // Under `bun build --compile`, import.meta.url resolves to a virtual /$bunfs/
 // path, NOT the real tarball location — we MUST use process.execPath to find

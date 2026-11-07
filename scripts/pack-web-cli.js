@@ -78,12 +78,12 @@ if (fs.existsSync(rendererOutDir)) {
   throw new Error(`Desktop renderer output not found at ${rendererOutDir}. Run bunx electron-vite build first.`);
 }
 
-// 6b. Ship the standalone SearXNG MCP server script.
-// It is NOT registered automatically (users add it via Settings → Tools → JSON
-// import, see README). Emitted by scripts/build-mcp-servers.js into out/main/
-// during the electron-vite main build; the tarball keeps the same relative path
-// (`<root>/out/main/builtin-mcp-searxng.js`) users are told to reference.
-console.log('6b. Copying builtin MCP server script...');
+// 6b. Ship the standalone MCP server scripts (SearXNG search, SQLREST bridge).
+// They are NOT registered automatically (users add them via Settings → Tools →
+// JSON import, see README). Emitted by scripts/build-mcp-servers.js into
+// out/main/ during the electron-vite main build; the tarball keeps the same
+// relative path (`<root>/out/main/builtin-mcp-*.js`) users are told to reference.
+console.log('6b. Copying builtin MCP server scripts...');
 // electron-vite only runs its MCP build plugin in development mode, so a plain
 // `electron-vite build` (production, used by CI) never emits out/main/builtin-mcp-*.js.
 // Bundle them here so the tarball does not depend on how the renderer/main build was invoked
@@ -92,16 +92,18 @@ execSync(`node "${path.join(projectRoot, 'scripts/build-mcp-servers.js')}"`, {
   cwd: projectRoot,
   stdio: 'inherit',
 });
-const mcpScriptSrc = path.join(projectRoot, 'out/main/builtin-mcp-searxng.js');
-if (!fs.existsSync(mcpScriptSrc)) {
-  throw new Error(
-    `Builtin MCP script not found at ${mcpScriptSrc}. ` +
-      'Run bunx electron-vite build first (scripts/build-mcp-servers.js emits it).'
-  );
-}
 const mcpScriptDest = path.join(tarballContentDir, 'out/main');
 fs.mkdirSync(mcpScriptDest, { recursive: true });
-fs.cpSync(mcpScriptSrc, path.join(mcpScriptDest, 'builtin-mcp-searxng.js'));
+for (const scriptName of ['builtin-mcp-searxng.js', 'builtin-mcp-sqlrest.js']) {
+  const mcpScriptSrc = path.join(projectRoot, 'out/main', scriptName);
+  if (!fs.existsSync(mcpScriptSrc)) {
+    throw new Error(
+      `Builtin MCP script not found at ${mcpScriptSrc}. ` +
+        'Run bunx electron-vite build first (scripts/build-mcp-servers.js emits it).'
+    );
+  }
+  fs.cpSync(mcpScriptSrc, path.join(mcpScriptDest, scriptName));
+}
 // Ship the CommonJS pin so the script isn't misparsed as ESM under the web-host
 // root package.json ("type": "module"). Emitted by scripts/build-mcp-servers.js.
 const mcpPkgSrc = path.join(projectRoot, 'out/main/package.json');

@@ -16,37 +16,11 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
+import { buildSearchUrl, formatResult, formatSummary, resolveBaseUrl, type SearxngResult } from './searxngFormat';
 
-const DEFAULT_BASE_URL = 'http://localhost:3826';
 const REQUEST_TIMEOUT_MS = 15000;
-
-function resolveBaseUrl(): string {
-  const raw = (process.env.AIONUI_SEARXNG_URL || DEFAULT_BASE_URL).trim();
-  return raw.replace(/\/+$/, '');
-}
-
-type SearxngResult = {
-  title?: string;
-  url?: string;
-  content?: string;
-  snippet?: string;
-  engine?: string;
-  /** Stable chunk id ("doc:index") — dedupes hits that share a URL/section. */
-  chunk_id?: string;
-  /** Engine score; higher is better and matches the returned order. */
-  score?: number;
-};
-
-function formatResult(result: SearxngResult, index: number): string {
-  const title = (result.title || '(untitled)').trim();
-  const url = (result.url || '').trim();
-  const snippet = (result.content || result.snippet || '').trim();
-  const lines = [`${index}. ${title}`];
-  if (url) lines.push(`   URL: ${url}`);
-  if (result.chunk_id) lines.push(`   ID: ${result.chunk_id}`);
-  if (snippet) lines.push(`   ${snippet}`);
-  return lines.join('\n');
-}
+const DEFAULT_TOP_K = 10;
+const MAX_OFFSET = 200;
 
 function errorResult(text: string) {
   return {
@@ -58,12 +32,12 @@ function errorResult(text: string) {
 async function main() {
   const server = new McpServer({
     name: 'searxng',
-    version: '1.0.0',
+    version: '1.1.0',
   });
 
   server.tool(
     'web_search',
-    `Search a SearXNG-compatible endpoint and return ranked results with titles, URLs and snippets.
+    `Search a SearXNG-compatible endpoint and return ranked results with titles, source files, URLs and snippets.
 
 Use this tool whenever the user asks to look something up, find references, or search documents/knowledge that is not already in the conversation.
 
@@ -77,7 +51,9 @@ Query syntax (mirrors the endpoint's parser):
 
 Notes:
 - The endpoint defaults to a local SearXNG-compatible service, so results reflect that service's index.
-- number_of_results is the total hit count (not the page size). strict_count is the number matching ALL conditions — when it is much smaller than number_of_results the query is broad, so switch to exact mode or tighten it.`,
+- number_of_results is the total hit count (not the page size). strict_count is the number matching ALL conditions — when it is much smaller than number_of_results the query is broad, so switch to exact mode or tighten it.
+- Each hit reports its FILE (the indexed document), a stable ID (same id = same chunk, use it to avoid repeating a hit across turns) and SCORE, where "N groups · BM25 x" means the hit covered N query term groups and x is the BM25 value inside that coverage band.
+- Paging: top_k caps one page (max 20); pass offset to continue from the next hit.`,
     {
       query: z
         .string()
@@ -96,30 +72,47 @@ Notes:
         .positive()
         .max(20)
         .optional()
-        .describe('Maximum number of results to return (1-20). Defaults to 10.'),
+        .describe(`Maximum number of results to return on this page (1-20). Defaults to ${DEFAULT_TOP_K}.`),
+      offset: z
+        .number()
+        .int()
+        .nonnegative()
+        .max(MAX_OFFSET)
+        .optional()
+        .describe(
+          `Number of leading hits to skip (0-${MAX_OFFSET}). Use total from a previous page to decide whether to continue. Defaults to 0.`
+        ),
       snippet_max_chars: z
         .number()
         .int()
         .nonnegative()
         .optional()
         .describe('Maximum snippet length in characters. 0 means full text. Defaults to the endpoint value (300).'),
+      time_range: z
+        .enum(['day', 'week', 'month', 'year'])
+        .optional()
+        .describe('Only return hits from files modified within this range (day/week/month/year).'),
     },
-    async ({ query, mode, top_k, snippet_max_chars }) => {
-      const baseUrl = resolveBaseUrl();
+    async ({ query, mode, top_k, offset, snippet_max_chars, time_range }) => {
+      const baseUrl = resolveBaseUrl(process.env.AIONUI_SEARXNG_URL);
+      const topK = top_k ?? DEFAULT_TOP_K;
+      const skip = offset ?? 0;
 
       let url: URL;
       try {
-        url = new URL('/search', baseUrl);
+        url = buildSearchUrl({
+          baseUrl,
+          query,
+          mode,
+          // The endpoint pages from row 1, so ask for everything up to this page
+          // and slice locally — that keeps `offset + top_k` semantics exact even
+          // when `offset` is not a multiple of `top_k`.
+          limit: skip + topK,
+          snippetMaxChars: snippet_max_chars,
+          timeRange: time_range,
+        });
       } catch {
         return errorResult(`Invalid SearXNG endpoint URL: "${baseUrl}"`);
-      }
-
-      url.searchParams.set('q', query);
-      url.searchParams.set('format', 'json');
-      if (mode) url.searchParams.set('mode', mode);
-      url.searchParams.set('pagesize', String(top_k ?? 10));
-      if (snippet_max_chars !== undefined) {
-        url.searchParams.set('snippet_max_chars', String(snippet_max_chars));
       }
 
       const controller = new AbortController();
@@ -137,28 +130,30 @@ Notes:
           strict_count?: number | null;
         };
         const results = Array.isArray(data.results) ? data.results : [];
+        const total = typeof data.number_of_results === 'number' ? data.number_of_results : results.length;
 
         if (results.length === 0) {
+          const text =
+            skip > 0
+              ? `No results at offset ${skip} for "${query}" (total ${total}).`
+              : `No results found for "${query}".`;
+          return { content: [{ type: 'text' as const, text }] };
+        }
+
+        const page = results.slice(skip, skip + topK);
+        const strict = typeof data.strict_count === 'number' ? data.strict_count : undefined;
+
+        if (page.length === 0) {
           return {
-            content: [{ type: 'text' as const, text: `No results found for "${query}".` }],
+            content: [{ type: 'text' as const, text: `No results at offset ${skip} for "${query}" (total ${total}).` }],
           };
         }
 
-        const total = typeof data.number_of_results === 'number' ? data.number_of_results : results.length;
-        const strict = typeof data.strict_count === 'number' ? data.strict_count : undefined;
-        const breadth =
-          strict !== undefined && strict < total
-            ? ` [strict matches: ${strict}; query is broad — use exact mode or tighten it]`
-            : '';
-        const body = results.map((result, index) => formatResult(result, index + 1)).join('\n\n');
+        const body = page.map((result, index) => formatResult(result, skip + index + 1)).join('\n\n');
+        const summary = formatSummary({ query, total, strict, offset: skip, returned: page.length });
 
         return {
-          content: [
-            {
-              type: 'text' as const,
-              text: `Found ${total} result(s) for "${query}" (showing ${results.length})${breadth}:\n\n${body}`,
-            },
-          ],
+          content: [{ type: 'text' as const, text: `${summary}\n\n${body}` }],
         };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);

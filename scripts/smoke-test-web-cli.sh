@@ -35,7 +35,7 @@ cd "$TEMP_DIR/aionui-web"
 #   ├── package.json         ← for version lookup
 #   ├── static/              ← SPA assets
 #   ├── bundled-aioncore/<plat-arch>/...
-#   └── out/main/builtin-mcp-searxng.js  ← optional MCP script (manual JSON import)
+#   └── out/main/builtin-mcp-*.js        ← optional MCP scripts (manual JSON import)
 for dir in static bundled-aioncore; do
   if [ ! -d "$dir" ]; then
     echo "❌ Missing $dir directory"

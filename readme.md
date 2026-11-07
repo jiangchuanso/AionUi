@@ -368,7 +368,13 @@ Adjust the script path and the endpoint, then import it:
   `127.0.0.1` is the container itself, use the host/LAN address instead. Omit the
   variable to fall back to `http://localhost:3826`.
 - The server exposes one tool, **`web_search`** (supports AND/OR/NOT, quoted
-  phrases, `-exclusion`, `filetype:` / `intitle:` filters).
+  phrases, `-exclusion`, `filetype:` / `intitle:` filters). Its parameters are
+  `mode` (`hybrid` / `exact` / `phrase`), `top_k` (≤ 20), `offset` (paging — the
+  result header prints the value for the next page), `snippet_max_chars` and
+  `time_range` (`day` / `week` / `month` / `year`, filtered by file mtime).
+  Every hit reports its source `FILE`, a stable chunk `ID` (same id = same chunk)
+  and its `SCORE`, where `N groups · BM25 x` means the hit covered `N` query term
+  groups and `x` is the BM25 value inside that coverage band.
 - **There is no global on/off switch.** Pick `searxng` in the MCP selector on the
   new-conversation screen (or set it as an assistant's default MCP); conversations
   that already exist will not pick it up.
@@ -376,10 +382,12 @@ Adjust the script path and the endpoint, then import it:
 ## 🔌 SQLREST Tool (MCP, manual JSON import)
 
 AionUi does **not** register any MCP server automatically. The SQLREST bridge
-ships as a standalone, **zero-dependency** Node script
-(`scripts/sqlrest-mcp.js`) — it needs no `npm install` and no build step. Add it
-once per account in **Settings → Tools → Add MCP Server**, which accepts the same
-`mcpServers` JSON shape other MCP clients use.
+ships as a standalone, self-contained script (`out/main/builtin-mcp-sqlrest.js`)
+built on the official MCP SDK with zod schemas — the SDK and zod are vendored at
+build time, so there is no `npm install` at runtime, and every tool argument is
+validated before the call is proxied. Add it once per account in **Settings →
+Tools → Add MCP Server**, which accepts the same `mcpServers` JSON shape other
+MCP clients use.
 
 Unlike the SearXNG tool, this server **auto-discovers** every published SQLREST
 API from the Manager node and exposes **each one as its own MCP tool** — you do
@@ -388,9 +396,17 @@ a single generic `sqlrest_call` tool where you supply the path.
 
 ### 1. Find the script
 
-It lives in this repository at `scripts/sqlrest-mcp.js`. Copy it anywhere on the
-machine running AionUi (or point `args` straight at the repo copy). It runs on
-any `node` ≥ 18 — AionUi's bundled Node works too.
+| Deployment      | Script path                                                                                  |
+| --------------- | -------------------------------------------------------------------------------------------- |
+| `aionui-web`    | `<install dir>/out/main/builtin-mcp-sqlrest.js` (e.g. `~/.local/share/aionui-web`)           |
+| Desktop (Linux) | `<install dir>/resources/app.asar.unpacked/out/main/builtin-mcp-sqlrest.js`                  |
+| Desktop (Win)   | `%LOCALAPPDATA%\Programs\AionUi\resources\app.asar.unpacked\out\main\builtin-mcp-sqlrest.js` |
+
+Building from source: `node scripts/build-mcp-servers.js` emits it into
+`out/main/`. When you copy the script elsewhere, take the sibling
+`out/main/package.json` along too — it pins that folder to CommonJS, and without
+it the bundle is misparsed as ESM. It runs on any `node` ≥ 18; AionUi's bundled
+Node works too.
 
 ### 2. Paste this JSON
 
@@ -401,7 +417,7 @@ Adjust the script path and the SQLREST connection, then import it:
   "mcpServers": {
     "sqlrest": {
       "command": "node",
-      "args": ["/path/to/scripts/sqlrest-mcp.js"],
+      "args": ["/opt/aionui-web/out/main/builtin-mcp-sqlrest.js"],
       "env": {
         "SQLREST_MANAGER_URL": "http://127.0.0.1:8090",
         "SQLREST_USERNAME": "admin",
@@ -416,26 +432,30 @@ Adjust the script path and the SQLREST connection, then import it:
 
 ### 3. Notes
 
-- **Auto-enumeration (no per-API setup).** On `tools/list` the server logs into
-  the Manager (`/user/login`) and pulls every online API via
+- **Auto-enumeration (no per-API setup).** At startup the server logs into the
+  Manager (`/user/login`) and pulls every online API via
   `/api/v1/assignment/search`, registering one tool per API (named
-  `sqlrest_<path>`). New/removed APIs are re-discovered every
-  `SQLREST_CACHE_SECONDS` (default 300). Give Manager credentials and you never
-  type an interface path by hand.
-- **Generic fallback.** If `SQLREST_MANAGER_URL` / credentials are omitted, the
-  server exposes only `sqlrest_call` (takes a `path` argument) so you can still
-  reach any endpoint manually.
+  `sqlrest_<path>`, suffixed with the method when two methods share a path).
+  Discovery repeats every `SQLREST_CACHE_SECONDS` (default 300): APIs published
+  later are added and the client is notified the tool list changed. Give Manager
+  credentials and you never type an interface path by hand.
+- **Generic fallback.** If discovery fails, or you set `SQLREST_MANAGER_URL` to
+  an empty string, the server exposes only `sqlrest_call` (takes a `path`
+  argument) so you can still reach any endpoint manually.
+- **Validated arguments.** Tool inputs are zod schemas: `params` / `body` must be
+  objects, `method` is one of `GET` / `POST` / `PUT` / `DELETE`, so a malformed
+  call is rejected by the MCP layer instead of being proxied to SQLREST.
 - **Environment variables.**
   | Variable | Default | Purpose |
   | ----------------------- | --------------------------- | ---------------------------------------------------------------------------------------------------- |
   | `SQLREST_API_BASE_URL` | `http://localhost:8091/api` | Base URL for executing APIs (the Gateway; use `:8092/api` for the Executor if you call it directly). |
   | `SQLREST_TOKEN` | _(empty)_ | Bearer token for API auth (client token). |
-  | `SQLREST_MANAGER_URL` | `http://localhost:8090` | Manager base URL for enumerating APIs. |
+  | `SQLREST_MANAGER_URL` | `http://localhost:8090` | Manager base URL for enumerating APIs; leave empty to disable discovery. |
   | `SQLREST_MANAGER_TOKEN` | _(empty)_ | Manager token (skips login). |
   | `SQLREST_USERNAME` | `admin` | Manager login username. |
   | `SQLREST_PASSWORD` | `123456` | Manager login password. |
   | `SQLREST_PAGE_SIZE` | `1000` | Page size for API enumeration. |
-  | `SQLREST_CACHE_SECONDS` | `300` | How long the enumerated tool list is cached. |
+  | `SQLREST_CACHE_SECONDS` | `300` | Re-discovery interval; new APIs are added and the client is notified. |
 - **Execution.** Each tool call is proxied to `{SQLREST_API_BASE_URL}/<path>`
   with the API method (GET/POST/PUT/DELETE). `params` become query string for
   GET and JSON body for writes; `body` overrides `params` for write methods. The
