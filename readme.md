@@ -373,6 +373,77 @@ Adjust the script path and the endpoint, then import it:
   new-conversation screen (or set it as an assistant's default MCP); conversations
   that already exist will not pick it up.
 
+## 🔌 SQLREST Tool (MCP, manual JSON import)
+
+AionUi does **not** register any MCP server automatically. The SQLREST bridge
+ships as a standalone, **zero-dependency** Node script
+(`scripts/sqlrest-mcp.js`) — it needs no `npm install` and no build step. Add it
+once per account in **Settings → Tools → Add MCP Server**, which accepts the same
+`mcpServers` JSON shape other MCP clients use.
+
+Unlike the SearXNG tool, this server **auto-discovers** every published SQLREST
+API from the Manager node and exposes **each one as its own MCP tool** — you do
+**not** enter interfaces one by one. With no Manager credentials it falls back to
+a single generic `sqlrest_call` tool where you supply the path.
+
+### 1. Find the script
+
+It lives in this repository at `scripts/sqlrest-mcp.js`. Copy it anywhere on the
+machine running AionUi (or point `args` straight at the repo copy). It runs on
+any `node` ≥ 18 — AionUi's bundled Node works too.
+
+### 2. Paste this JSON
+
+Adjust the script path and the SQLREST connection, then import it:
+
+```json
+{
+  "mcpServers": {
+    "sqlrest": {
+      "command": "node",
+      "args": ["/path/to/scripts/sqlrest-mcp.js"],
+      "env": {
+        "SQLREST_MANAGER_URL": "http://127.0.0.1:8090",
+        "SQLREST_USERNAME": "admin",
+        "SQLREST_PASSWORD": "123456",
+        "SQLREST_API_BASE_URL": "http://127.0.0.1:8091/api",
+        "SQLREST_TOKEN": ""
+      }
+    }
+  }
+}
+```
+
+### 3. Notes
+
+- **Auto-enumeration (no per-API setup).** On `tools/list` the server logs into
+  the Manager (`/user/login`) and pulls every online API via
+  `/api/v1/assignment/search`, registering one tool per API (named
+  `sqlrest_<path>`). New/removed APIs are re-discovered every
+  `SQLREST_CACHE_SECONDS` (default 300). Give Manager credentials and you never
+  type an interface path by hand.
+- **Generic fallback.** If `SQLREST_MANAGER_URL` / credentials are omitted, the
+  server exposes only `sqlrest_call` (takes a `path` argument) so you can still
+  reach any endpoint manually.
+- **Environment variables.**
+  | Variable               | Default                       | Purpose                                                     |
+  | ---------------------- | ----------------------------- | ----------------------------------------------------------- |
+  | `SQLREST_API_BASE_URL` | `http://localhost:8091/api`   | Base URL for executing APIs (the Gateway; use `:8092/api` for the Executor if you call it directly). |
+  | `SQLREST_TOKEN`        | _(empty)_                     | Bearer token for API auth (client token).                   |
+  | `SQLREST_MANAGER_URL`  | `http://localhost:8090`       | Manager base URL for enumerating APIs.                       |
+  | `SQLREST_MANAGER_TOKEN`| _(empty)_                     | Manager token (skips login).                                |
+  | `SQLREST_USERNAME`     | `admin`                       | Manager login username.                                     |
+  | `SQLREST_PASSWORD`     | `123456`                      | Manager login password.                                     |
+  | `SQLREST_PAGE_SIZE`    | `1000`                        | Page size for API enumeration.                              |
+  | `SQLREST_CACHE_SECONDS`| `300`                         | How long the enumerated tool list is cached.                |
+- **Execution.** Each tool call is proxied to `{SQLREST_API_BASE_URL}/<path>`
+  with the API method (GET/POST/PUT/DELETE). `params` become query string for
+  GET and JSON body for writes; `body` overrides `params` for write methods. The
+  `Authorization: Bearer <SQLREST_TOKEN>` header is forwarded when set. The JSON
+  response is returned as text.
+- **Reachability.** URLs must be reachable from the machine running AionUi —
+  inside Docker, `127.0.0.1` is the container itself, use the host/LAN address.
+
 ## ✨ Cowork in Action
 
 ### **Scheduled Tasks — Cowork on Autopilot**
