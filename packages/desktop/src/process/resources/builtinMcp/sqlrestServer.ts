@@ -7,27 +7,26 @@
 /**
  * Standalone MCP server for SQLREST (https://gitee.com/inrgihc/sqlrest).
  *
- * Runs as a stdio MCP server on the official MCP SDK. It enumerates every
- * *published* SQLREST API from the Manager node and registers each one as an
- * individual tool (arguments validated by zod), so a single MCP server can talk
- * to all the REST endpoints ("ports") that SQLREST generated. Calls are proxied
- * to the Gateway/Executor node and the JSON response is returned as text.
+ * Runs as a stdio MCP server on the official MCP SDK. Tool discovery reads the
+ * Gateway's public Swagger/OpenAPI document and turns each documented operation
+ * into a tool with a zod schema built from its parameters. No Manager URL,
+ * login, admin token or password is used anywhere: document requests are
+ * unauthenticated GETs that stay on the Gateway origin by default.
  *
- * When discovery is disabled or fails it falls back to a single generic
- * `sqlrest_call` tool that takes an explicit path, so any endpoint stays
- * reachable.
+ * Discovery URL candidates are probed in order (springdoc, springfox, custom
+ * apidoc, `/swagger-resources`, `/apidoc/index.html`), or you can pin one with
+ * SQLREST_OPENAPI_URL. If no document is reachable only `sqlrest_call` is
+ * exposed, so every endpoint remains callable by explicit path.
  *
  * Environment variables:
- *   SQLREST_API_BASE_URL    Base URL for executing APIs. Default http://localhost:8091/api
- *                           (the Gateway; use http://localhost:8092/api for the Executor).
- *   SQLREST_TOKEN           Bearer token for API auth (client token). Optional.
- *   SQLREST_MANAGER_URL     Manager base URL for enumerating APIs. Default http://localhost:8090.
- *                           Set it to an empty string to skip discovery entirely.
- *   SQLREST_MANAGER_TOKEN   Manager token (skips login). Optional.
- *   SQLREST_USERNAME        Manager login username. Default admin.
- *   SQLREST_PASSWORD        Manager login password. Default 123456.
- *   SQLREST_PAGE_SIZE       Page size for API enumeration. Default 1000.
- *   SQLREST_CACHE_SECONDS   Re-discovery interval for the tool list. Default 300.
+ *   SQLREST_API_BASE_URL               Execution base URL. Default http://localhost:8091/api
+ *                                      (the Gateway; use :8092/api for the Executor).
+ *   SQLREST_TOKEN                      Client token for API auth. Optional; never sent during discovery.
+ *   SQLREST_OPENAPI_URL                Explicit Swagger/OpenAPI JSON URL. Optional.
+ *   SQLREST_OPENAPI_PATH_PREFIX        Only expose paths containing this prefix. Default /api/.
+ *   SQLREST_OPENAPI_ALLOW_CROSS_ORIGIN Set to 1 to allow documents on another origin. Default off.
+ *   SQLREST_OPENAPI_DISABLE            Set to 1 to skip discovery entirely. Default off.
+ *   SQLREST_CACHE_SECONDS              Re-discovery interval. Default 300.
  */
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -35,22 +34,31 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import {
   buildCallRequest,
+  DEFAULT_DISCOVERY_TIMEOUT_MS,
   DEFAULT_TIMEOUT_MS,
-  describeApi,
+  discoveryUrls,
   formatResponseBody,
   GENERIC_TOOL_NAME,
-  readApiPage,
+  isOpenApiDocument,
+  MAX_DISCOVERY_ATTEMPTS,
+  MAX_DISCOVERY_DOCUMENTS,
+  parseOpenApiDocument,
+  readSwaggerResources,
+  readSwaggerUiUrls,
   reserveToolName,
   resolveConfig,
-  shouldFetchNextPage,
-  type SqlrestApi,
+  type ApiToolSpec,
+  type ParamSpec,
   type SqlrestCallArgs,
   type SqlrestConfig,
   type SqlrestRequest,
 } from './sqlrestFormat';
 
-/** Safety cap so a misbehaving Manager cannot loop us forever. */
-const MAX_PAGES = 50;
+/** Upper bound on the whole startup probe, so a slow Gateway cannot hang MCP init. */
+const DISCOVERY_DEADLINE_MS = 15000;
+
+/** Group-index endpoints are only worth probing when no document was found. */
+const DOCUMENT_INDEX_PATHS = ['/swagger-resources', '/apidoc/index.html'];
 
 function log(message: string): void {
   process.stderr.write(`[SqlrestMCP] ${message}\n`);
@@ -69,6 +77,34 @@ function errorResult(text: string) {
 
 type HttpResponse = { ok: boolean; status: number; data: unknown };
 
+type DocumentResponse = { text: string } | null;
+
+/**
+ * Read-only document fetch. Deliberately sends no Authorization header, never
+ * follows a redirect (a redirect could leave the trusted origin), and has a
+ * short timeout so probing many candidates stays cheap.
+ */
+async function fetchDocument(url: string): Promise<DocumentResponse> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), DEFAULT_DISCOVERY_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: { Accept: 'application/json, text/html, */*' },
+      redirect: 'manual',
+      signal: controller.signal,
+    });
+    if (response.type === 'opaqueredirect' || (response.status >= 300 && response.status < 400)) return null;
+    if (!response.ok) return null;
+    return { text: await response.text() };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Executes a proxied API call; this is the only request that carries the token. */
 async function httpJson(request: SqlrestRequest): Promise<HttpResponse> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
@@ -94,65 +130,126 @@ async function httpJson(request: SqlrestRequest): Promise<HttpResponse> {
   }
 }
 
-async function getManagerToken(config: SqlrestConfig): Promise<string> {
-  if (config.managerToken) return config.managerToken;
+/**
+ * Walks the probe list. A `/swagger-resources` response or a Swagger UI page
+ * yields more candidate URLs, which are queued and fetched the same way.
+ */
+async function collectDocuments(config: SqlrestConfig): Promise<unknown[]> {
+  const documents: unknown[] = [];
+  const queue = discoveryUrls(config);
+  const seen = new Set<string>();
+  const deadline = Date.now() + DISCOVERY_DEADLINE_MS;
 
-  const res = await httpJson({
-    url: `${config.managerUrl}/user/login`,
-    method: 'POST',
-    headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username: config.username, password: config.password }),
-  });
-  if (!res.ok) throw new Error(`Manager login failed: HTTP ${res.status}`);
+  let attempts = 0;
+  let viaIndex = false;
+  while (queue.length > 0 && attempts < MAX_DISCOVERY_ATTEMPTS && documents.length < MAX_DISCOVERY_DOCUMENTS) {
+    const url = queue.shift();
+    if (!url || seen.has(url) || Date.now() > deadline) break;
+    seen.add(url);
+    attempts += 1;
 
-  const token = (res.data as { data?: unknown } | null)?.data;
-  if (typeof token !== 'string' || !token) {
-    throw new Error(`Manager login returned no token: ${formatResponseBody(res.data)}`);
+    // A group index can point at more documents, but probing it after we already
+    // have a valid document only widens the request surface for no benefit.
+    if (documents.length > 0 && DOCUMENT_INDEX_PATHS.some((path) => url.endsWith(path))) continue;
+
+    const response = await fetchDocument(url);
+    if (!response) continue;
+
+    let payload: unknown;
+    try {
+      payload = JSON.parse(response.text);
+    } catch {
+      const extras = readSwaggerUiUrls(response.text, config);
+      viaIndex = viaIndex || extras.length > 0;
+      for (const extra of extras) {
+        if (!seen.has(extra)) queue.push(extra);
+      }
+      continue;
+    }
+
+    if (isOpenApiDocument(payload)) {
+      documents.push(payload);
+      // One document is enough unless a group index pointed us at several.
+      if (!viaIndex) break;
+    } else {
+      const extras = readSwaggerResources(payload, config);
+      viaIndex = viaIndex || extras.length > 0;
+      for (const extra of extras) {
+        if (!seen.has(extra)) queue.push(extra);
+      }
+    }
   }
-  return token;
+
+  return documents;
 }
 
-async function listPublishedApis(config: SqlrestConfig, token: string): Promise<SqlrestApi[]> {
-  const apis: SqlrestApi[] = [];
-  const headers = { Accept: 'application/json', 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
-
-  for (let page = 1; page <= MAX_PAGES; page += 1) {
-    const res = await httpJson({
-      url: `${config.managerUrl}/api/v1/assignment/search`,
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ page, size: config.pageSize, searchText: '' }),
-    });
-    if (!res.ok) throw new Error(`API search failed: HTTP ${res.status}`);
-
-    const { apis: pageApis, total } = readApiPage(res.data);
-    apis.push(...pageApis);
-    if (!shouldFetchNextPage(apis.length, total, pageApis.length)) break;
+function toZod(parameter: ParamSpec): z.ZodTypeAny {
+  let schema: z.ZodTypeAny;
+  switch (parameter.type) {
+    case 'integer':
+      schema = z.number().int();
+      break;
+    case 'number':
+      schema = z.number();
+      break;
+    case 'boolean':
+      schema = z.boolean();
+      break;
+    case 'array':
+      schema = z.array(z.unknown());
+      break;
+    case 'object':
+      schema = z.record(z.unknown());
+      break;
+    case 'string':
+      schema = parameter.enum?.length ? z.enum(parameter.enum as [string, ...string[]]) : z.string();
+      break;
+    default:
+      schema = z.unknown();
   }
-
-  return apis;
+  if (parameter.description) schema = schema.describe(parameter.description);
+  return parameter.required ? schema : schema.optional();
 }
 
-/** Argument shape shared by every discovered API tool: loose DSL inputs. */
-function callArgShape() {
+/** Builds a tool-specific zod shape from the documented parameters. */
+function parameterSchema(parameters: ParamSpec[]): z.ZodTypeAny {
+  const shape: Record<string, z.ZodTypeAny> = {};
+  for (const parameter of parameters) shape[parameter.name] = toZod(parameter);
+  // passthrough() keeps undocumented SQLREST DSL arguments working.
+  return z.object(shape).passthrough();
+}
+
+function callArgShape(spec: ApiToolSpec) {
+  return {
+    params: parameterSchema(spec.params)
+      .optional()
+      .describe('Documented query/path parameters. Path placeholders are filled from these values.'),
+    body: parameterSchema(spec.body)
+      .optional()
+      .describe('Documented JSON request body fields; takes precedence over params for write methods.'),
+  };
+}
+
+function genericArgShape() {
   return {
     params: z
       .record(z.unknown())
       .optional()
-      .describe(
-        'DSL/SQL input as key-value pairs; the keys are the parameter names the API defines. Sent as the query string for GET/HEAD and as the JSON body for writes.'
-      ),
-    body: z
-      .record(z.unknown())
-      .optional()
-      .describe('JSON request body for writes (POST/PUT/DELETE). Takes precedence over params when both are given.'),
+      .describe('Input as key-value pairs (query string for GET, JSON body for writes).'),
+    body: z.record(z.unknown()).optional().describe('Explicit JSON request body for writes.'),
   };
 }
 
-async function callApi(config: SqlrestConfig, path: string, method: string, args: SqlrestCallArgs) {
+async function callApi(
+  config: SqlrestConfig,
+  path: string,
+  method: string,
+  args: SqlrestCallArgs,
+  pathVars: string[] = []
+) {
   let request: SqlrestRequest;
   try {
-    request = buildCallRequest(config, path, method, args);
+    request = buildCallRequest(config, path, method, args, pathVars);
   } catch (error) {
     return errorResult(`Could not build the SQLREST request for "${path}": ${messageOf(error)}`);
   }
@@ -179,74 +276,69 @@ Pass params as key-value pairs (query string for GET, JSON body for writes) or b
       inputSchema: {
         path: z.string().min(1).describe('API path without the /api prefix, e.g. user/list or order/query.'),
         method: z.enum(['GET', 'POST', 'PUT', 'DELETE']).optional().describe('HTTP method. Defaults to GET.'),
-        ...callArgShape(),
+        ...genericArgShape(),
       },
     },
     async ({ path, method, params, body }) => callApi(config, path, method ?? 'GET', { params, body })
   );
 }
 
-/**
- * One discovery pass: logs into the Manager, enumerates published APIs and
- * registers the ones that are not known yet. Returns how many were added.
- */
+/** One discovery pass; returns how many new tools were registered. */
 async function discoverTools(server: McpServer, config: SqlrestConfig, taken: Set<string>): Promise<number> {
-  try {
-    const token = await getManagerToken(config);
-    const apis = await listPublishedApis(config, token);
-
-    let added = 0;
-    for (const api of apis) {
-      const spec = describeApi(api);
-      if (!spec) continue;
-
-      const name = reserveToolName(spec, taken);
-      if (!name) continue;
-      taken.add(name);
-
-      server.registerTool(
-        name,
-        {
-          description: spec.description,
-          inputSchema: callArgShape(),
-          annotations: { readOnlyHint: spec.method === 'GET' || spec.method === 'HEAD' },
-        },
-        async (args) => callApi(config, spec.path, spec.method, args)
-      );
-      added += 1;
-    }
-
-    if (added > 0) {
-      log(`Registered ${added} published API tool(s) from the Manager (${apis.length} listed).`);
-      // Tell a connected client the list grew; before connect() this is a no-op.
-      if (server.isConnected()) server.sendToolListChanged();
-    }
-    return added;
-  } catch (error) {
-    log(`Discovery failed (${messageOf(error)}); keeping the generic ${GENERIC_TOOL_NAME} tool.`);
+  const documents = await collectDocuments(config);
+  if (documents.length === 0) {
+    log('No Swagger/OpenAPI document reachable; only the generic tool is available.');
     return 0;
   }
+
+  const specs = documents.flatMap((document) => parseOpenApiDocument(document, config));
+  let added = 0;
+  for (const spec of specs) {
+    const name = reserveToolName(spec, taken);
+    if (!name) continue;
+    taken.add(name);
+
+    server.registerTool(
+      name,
+      {
+        description: spec.description,
+        inputSchema: callArgShape(spec),
+        annotations: { readOnlyHint: spec.method === 'GET' || spec.method === 'HEAD' },
+      },
+      async (args) => callApi(config, spec.path, spec.method, args, spec.pathVars)
+    );
+    added += 1;
+  }
+
+  log(`Registered ${added} documented API tool(s) from ${documents.length} document(s).`);
+  if (added > 0 && server.isConnected()) server.sendToolListChanged();
+  return added;
 }
 
 async function main(): Promise<void> {
   const config = resolveConfig(process.env);
-  const server = new McpServer({ name: 'sqlrest', version: '1.2.0' });
+  const server = new McpServer({ name: 'sqlrest', version: '1.3.0' });
   const taken = new Set<string>();
 
   registerGenericTool(server, config, taken);
+  log('Discovery is unauthenticated and read-only; no Manager credentials are used.');
 
-  if (config.managerUrl) {
-    // Discover before connecting so tools/list is already complete on the first call.
-    await discoverTools(server, config, taken);
+  if (config.discoveryEnabled) {
+    try {
+      // Discover before connecting so tools/list is already complete on the first call.
+      await discoverTools(server, config, taken);
+    } catch (error) {
+      log(`Discovery failed (${messageOf(error)}); keeping the generic ${GENERIC_TOOL_NAME} tool.`);
+    }
   } else {
-    log('SQLREST_MANAGER_URL is empty; only the generic tool is available.');
+    log('Discovery disabled; only the generic tool is available.');
   }
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
   log(`SQLREST MCP server ready (${taken.size} tool(s)).`);
 
-  if (config.managerUrl) {
+  if (config.discoveryEnabled) {
     // Pick up APIs published after startup without requiring a restart.
     setInterval(() => {
       void discoverTools(server, config, taken);

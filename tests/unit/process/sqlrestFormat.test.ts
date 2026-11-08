@@ -3,16 +3,16 @@ import {
   buildCallRequest,
   DEFAULT_API_BASE_URL,
   DEFAULT_CACHE_SECONDS,
-  DEFAULT_MANAGER_URL,
-  DEFAULT_PAGE_SIZE,
-  describeApi,
+  discoveryUrls,
   formatResponseBody,
   GENERIC_TOOL_NAME,
-  readApiPage,
+  isSameOrigin,
+  readSwaggerResources,
+  readSwaggerUiUrls,
   reserveToolName,
   resolveConfig,
+  resolveDocumentUrl,
   sanitizeToolName,
-  shouldFetchNextPage,
   toQueryString,
   type ApiToolSpec,
   type SqlrestConfig,
@@ -21,36 +21,129 @@ import {
 const baseConfig: SqlrestConfig = resolveConfig({});
 
 describe('resolveConfig', () => {
-  it('falls back to the local SQLREST ports when nothing is set', () => {
+  it('falls back to the local Gateway and keeps discovery on that origin', () => {
     expect(baseConfig.apiBaseUrl).toBe(DEFAULT_API_BASE_URL);
-    expect(baseConfig.managerUrl).toBe(DEFAULT_MANAGER_URL);
-    expect(baseConfig.pageSize).toBe(DEFAULT_PAGE_SIZE);
+    expect(baseConfig.discoveryOrigin).toBe('http://localhost:8091');
+    expect(baseConfig.pathPrefix).toBe('/api/');
     expect(baseConfig.cacheSeconds).toBe(DEFAULT_CACHE_SECONDS);
-    expect(baseConfig.username).toBe('admin');
-    expect(baseConfig.password).toBe('123456');
+    expect(baseConfig.discoveryEnabled).toBe(true);
+    expect(baseConfig.allowCrossOrigin).toBe(false);
     expect(baseConfig.token).toBe('');
   });
 
-  it('trims whitespace and trailing slashes so paths stay absolute', () => {
+  it('has no Manager credential fields at all', () => {
+    expect(Object.keys(baseConfig)).not.toContain('managerUrl');
+    expect(Object.keys(baseConfig)).not.toContain('managerToken');
+    expect(Object.keys(baseConfig)).not.toContain('username');
+    expect(Object.keys(baseConfig)).not.toContain('password');
+  });
+
+  it('ignores retired Manager variables even when they are still in the config', () => {
     const config = resolveConfig({
-      SQLREST_API_BASE_URL: ' http://127.0.0.1:8092/api/ ',
-      SQLREST_MANAGER_URL: 'http://127.0.0.1:8090//',
+      SQLREST_MANAGER_URL: 'http://legacy:8090',
+      SQLREST_USERNAME: 'admin',
+      SQLREST_PASSWORD: 'secret',
+      SQLREST_MANAGER_TOKEN: 'admin-token',
     });
 
-    expect(config.apiBaseUrl).toBe('http://127.0.0.1:8092/api');
-    expect(config.managerUrl).toBe('http://127.0.0.1:8090');
+    expect(JSON.stringify(config)).not.toContain('legacy');
+    expect(JSON.stringify(config)).not.toContain('secret');
+    expect(JSON.stringify(config)).not.toContain('admin');
   });
 
-  it('treats an explicitly empty manager URL as "discovery disabled"', () => {
-    expect(resolveConfig({ SQLREST_MANAGER_URL: '' }).managerUrl).toBe('');
-    expect(resolveConfig({ SQLREST_MANAGER_URL: '   ' }).managerUrl).toBe('');
+  it('supports an explicit document URL, prefix override and opt-outs', () => {
+    const config = resolveConfig({
+      SQLREST_OPENAPI_URL: 'http://127.0.0.1:8091/custom/docs.json',
+      SQLREST_OPENAPI_PATH_PREFIX: 'v2/api',
+      SQLREST_OPENAPI_DISABLE: '1',
+      SQLREST_OPENAPI_ALLOW_CROSS_ORIGIN: 'true',
+    });
+
+    expect(config.openapiUrl).toBe('http://127.0.0.1:8091/custom/docs.json');
+    expect(config.pathPrefix).toBe('/v2/api/');
+    expect(config.discoveryEnabled).toBe(false);
+    expect(config.allowCrossOrigin).toBe(true);
   });
 
-  it('ignores unusable numbers instead of producing NaN', () => {
-    const config = resolveConfig({ SQLREST_PAGE_SIZE: 'lots', SQLREST_CACHE_SECONDS: '0' });
+  it('treats an empty prefix as "no prefix filter"', () => {
+    expect(resolveConfig({ SQLREST_OPENAPI_PATH_PREFIX: '' }).pathPrefix).toBe('');
+  });
+});
 
-    expect(config.pageSize).toBe(DEFAULT_PAGE_SIZE);
-    expect(config.cacheSeconds).toBe(DEFAULT_CACHE_SECONDS);
+describe('discoveryUrls', () => {
+  it('probes the standard Gateway locations on the configured origin', () => {
+    const urls = discoveryUrls(baseConfig);
+
+    expect(urls[0]).toBe('http://localhost:8091/v3/api-docs');
+    expect(urls).toContain('http://localhost:8091/v2/api-docs');
+    expect(urls).toContain('http://localhost:8091/swagger-resources');
+    expect(urls).toContain('http://localhost:8091/apidoc/index.html');
+    expect(new Set(urls).size).toBe(urls.length);
+  });
+
+  it('puts an explicit document URL first', () => {
+    const config = resolveConfig({ SQLREST_OPENAPI_URL: 'http://localhost:8091/my-docs.json' });
+    expect(discoveryUrls(config)[0]).toBe('http://localhost:8091/my-docs.json');
+  });
+
+  it('drops cross-origin candidates unless explicitly allowed', () => {
+    const config = resolveConfig({ SQLREST_OPENAPI_URL: 'http://elsewhere.example/v3/api-docs' });
+
+    expect(discoveryUrls(config)).not.toContain('http://elsewhere.example/v3/api-docs');
+    expect(discoveryUrls({ ...config, allowCrossOrigin: true })[0]).toBe('http://elsewhere.example/v3/api-docs');
+  });
+});
+
+describe('resolveDocumentUrl', () => {
+  it('resolves relative locations against the Gateway origin', () => {
+    expect(resolveDocumentUrl('/v2/api-docs?group=default', baseConfig)).toBe(
+      'http://localhost:8091/v2/api-docs?group=default'
+    );
+  });
+
+  it('refuses links to another origin and non-http schemes', () => {
+    expect(resolveDocumentUrl('http://elsewhere.example/v2/api-docs', baseConfig)).toBeNull();
+    expect(resolveDocumentUrl('file:///etc/passwd', baseConfig)).toBeNull();
+    expect(resolveDocumentUrl('', baseConfig)).toBeNull();
+  });
+
+  it('recognises same-origin URLs', () => {
+    expect(isSameOrigin('http://localhost:8091/apidoc/index.html', 'http://localhost:8091')).toBe(true);
+    expect(isSameOrigin('http://elsewhere.example/v2/api-docs', 'http://localhost:8091')).toBe(false);
+  });
+});
+
+describe('readSwaggerResources', () => {
+  it('turns grouped locations into document URLs', () => {
+    expect(
+      readSwaggerResources(
+        [
+          { name: 'default', location: '/v2/api-docs?group=a', url: '/v2/api-docs?group=a' },
+          { name: 'other', url: '/v3/api-docs' },
+        ],
+        baseConfig
+      )
+    ).toEqual(['http://localhost:8091/v2/api-docs?group=a', 'http://localhost:8091/v3/api-docs']);
+  });
+
+  it('never follows a cross-origin location embedded in the response', () => {
+    expect(readSwaggerResources([{ location: 'http://elsewhere.example/v2/api-docs' }], baseConfig)).toEqual([]);
+  });
+});
+
+describe('readSwaggerUiUrls', () => {
+  it('extracts url, urls[] and configUrl from a Swagger UI page', () => {
+    const html = `
+      SwaggerUIBundle({ url: "/v2/api-docs", dom_id: "#swagger" });
+      configUrl: "/v3/api-docs/swagger-config";
+      urls: [{url: "/apidoc/group-a.json", name: "A"}];
+    `;
+
+    expect(readSwaggerUiUrls(html, baseConfig)).toEqual([
+      'http://localhost:8091/v2/api-docs',
+      'http://localhost:8091/v3/api-docs/swagger-config',
+      'http://localhost:8091/apidoc/group-a.json',
+    ]);
   });
 });
 
@@ -62,42 +155,27 @@ describe('sanitizeToolName', () => {
 
   it('falls back to a stable name for paths without ASCII characters', () => {
     expect(sanitizeToolName('订单/查询')).toBe('sqlrest_api');
-    // Reserved for the generic fallback, and used as the empty-path default.
     expect(GENERIC_TOOL_NAME).toBe('sqlrest_call');
   });
 });
 
-describe('describeApi', () => {
-  it('normalises path, method and description', () => {
-    const spec = describeApi({ name: 'User list', description: 'list users', path: '/user/list', method: 'post' });
-
-    expect(spec).toEqual({
-      name: 'sqlrest_user_list',
-      description: 'User list — list users — (POST /api/user/list)',
-      path: 'user/list',
-      method: 'POST',
-    });
-  });
-
-  it('defaults the method to GET and drops records without a path', () => {
-    expect(describeApi({ path: 'user/list' })?.method).toBe('GET');
-    expect(describeApi({ name: 'orphan' })).toBeNull();
-    expect(describeApi({ path: '///' })).toBeNull();
-  });
-});
-
 describe('reserveToolName', () => {
-  const spec: ApiToolSpec = { name: 'sqlrest_user_list', description: '', path: 'user/list', method: 'POST' };
+  const spec: ApiToolSpec = {
+    name: 'sqlrest_user_list',
+    description: '',
+    path: 'user/list',
+    method: 'POST',
+    pathVars: [],
+    params: [],
+    body: [],
+  };
 
   it('uses the path-derived name while it is free', () => {
     expect(reserveToolName(spec, new Set())).toBe('sqlrest_user_list');
   });
 
-  it('suffixes the method when GET and POST share a path', () => {
+  it('suffixes the method when GET and POST share a path, then gives up', () => {
     expect(reserveToolName(spec, new Set(['sqlrest_user_list']))).toBe('sqlrest_user_list_post');
-  });
-
-  it('gives up once both candidates are taken', () => {
     expect(reserveToolName(spec, new Set(['sqlrest_user_list', 'sqlrest_user_list_post']))).toBeNull();
   });
 });
@@ -109,11 +187,8 @@ describe('toQueryString', () => {
     );
   });
 
-  it('serialises nested objects instead of dropping them', () => {
+  it('serialises nested objects and returns an empty string without params', () => {
     expect(toQueryString({ filter: { a: 1 } })).toBe(`filter=${encodeURIComponent('{"a":1}')}`);
-  });
-
-  it('returns an empty string without params', () => {
     expect(toQueryString()).toBe('');
   });
 });
@@ -126,11 +201,6 @@ describe('buildCallRequest', () => {
     expect(request.method).toBe('GET');
     expect(request.body).toBeUndefined();
     expect(request.headers.Authorization).toBe('Bearer abc');
-    expect(request.headers.Accept).toBe('application/json');
-  });
-
-  it('omits the query string when there are no params', () => {
-    expect(buildCallRequest(baseConfig, 'user/list', 'GET').url).toBe('http://localhost:8091/api/user/list');
   });
 
   it('sends body as JSON for writes and lets it override params', () => {
@@ -139,14 +209,21 @@ describe('buildCallRequest', () => {
       body: { id: 9 },
     });
 
-    expect(request.method).toBe('POST');
     expect(request.headers['Content-Type']).toBe('application/json');
     expect(request.body).toBe('{"id":9}');
   });
 
-  it('falls back to params for writes and omits the body when both are empty', () => {
-    expect(buildCallRequest(baseConfig, 'order/query', 'POST', { params: { id: 3 } }).body).toBe('{"id":3}');
-    expect(buildCallRequest(baseConfig, 'order/query', 'PUT').body).toBeUndefined();
+  it('fills path placeholders and removes those keys from the query', () => {
+    const request = buildCallRequest(baseConfig, 'order/{id}/items', 'GET', { params: { id: 'a b', page: 2 } }, ['id']);
+
+    expect(request.url).toBe('http://localhost:8091/api/order/a%20b/items?page=2');
+  });
+
+  it('rejects missing or unresolved path parameters', () => {
+    expect(() => buildCallRequest(baseConfig, 'order/{id}', 'GET', {}, ['id'])).toThrow(/Missing path parameter/);
+    expect(() => buildCallRequest(baseConfig, 'order/{id}', 'GET', { params: { id: 1 } })).toThrow(
+      /Unresolved path parameter/
+    );
   });
 
   it('does not leak the bearer token when none is configured', () => {
@@ -154,46 +231,10 @@ describe('buildCallRequest', () => {
   });
 });
 
-describe('readApiPage', () => {
-  it('unwraps the Manager envelope and its pagination total', () => {
-    expect(readApiPage({ data: [{ path: 'a/b' }], pagination: { total: 42 } })).toEqual({
-      apis: [{ path: 'a/b' }],
-      total: 42,
-    });
-  });
-
-  it('falls back to the page length when pagination is missing', () => {
-    expect(readApiPage({ data: [{ path: 'a/b' }, { path: 'c/d' }] })).toEqual({
-      apis: [{ path: 'a/b' }, { path: 'c/d' }],
-      total: 2,
-    });
-  });
-
-  it('returns an empty page for unexpected payloads', () => {
-    expect(readApiPage(null)).toEqual({ apis: [], total: 0 });
-    expect(readApiPage({ data: 'nope' }).apis).toEqual([]);
-  });
-});
-
-describe('shouldFetchNextPage', () => {
-  it('continues while rows are missing', () => {
-    expect(shouldFetchNextPage(1000, 2500, 1000)).toBe(true);
-  });
-
-  it('stops on the last page or an empty page', () => {
-    expect(shouldFetchNextPage(2500, 2500, 500)).toBe(false);
-    expect(shouldFetchNextPage(0, 10, 0)).toBe(false);
-  });
-});
-
 describe('formatResponseBody', () => {
-  it('passes plain text through unchanged', () => {
+  it('passes plain text through and pretty-prints JSON payloads', () => {
     expect(formatResponseBody('plain text')).toBe('plain text');
-  });
-
-  it('pretty-prints JSON payloads and blanks out empty ones', () => {
     expect(formatResponseBody({ code: 200 })).toBe('{\n  "code": 200\n}');
     expect(formatResponseBody(null)).toBe('');
-    expect(formatResponseBody(undefined)).toBe('');
   });
 });

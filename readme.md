@@ -390,9 +390,11 @@ Tools → Add MCP Server**, which accepts the same `mcpServers` JSON shape other
 MCP clients use.
 
 Unlike the SearXNG tool, this server **auto-discovers** every published SQLREST
-API from the Manager node and exposes **each one as its own MCP tool** — you do
-**not** enter interfaces one by one. With no Manager credentials it falls back to
-a single generic `sqlrest_call` tool where you supply the path.
+API from the Gateway's Swagger/OpenAPI document and exposes **each one as its own
+MCP tool** — you do **not** enter interfaces one by one. Discovery needs **no
+Manager account, password or admin token**: document requests are unauthenticated
+read-only GETs. If no document is reachable, it falls back to a single generic
+`sqlrest_call` tool where you supply the path.
 
 ### 1. Find the script
 
@@ -419,9 +421,6 @@ Adjust the script path and the SQLREST connection, then import it:
       "command": "node",
       "args": ["/opt/aionui-web/out/main/builtin-mcp-sqlrest.js"],
       "env": {
-        "SQLREST_MANAGER_URL": "http://127.0.0.1:8090",
-        "SQLREST_USERNAME": "admin",
-        "SQLREST_PASSWORD": "123456",
         "SQLREST_API_BASE_URL": "http://127.0.0.1:8091/api",
         "SQLREST_TOKEN": ""
       }
@@ -432,29 +431,38 @@ Adjust the script path and the SQLREST connection, then import it:
 
 ### 3. Notes
 
-- **Auto-enumeration (no per-API setup).** At startup the server logs into the
-  Manager (`/user/login`) and pulls every online API via
-  `/api/v1/assignment/search`, registering one tool per API (named
-  `sqlrest_<path>`, suffixed with the method when two methods share a path).
-  Discovery repeats every `SQLREST_CACHE_SECONDS` (default 300): APIs published
-  later are added and the client is notified the tool list changed. Give Manager
-  credentials and you never type an interface path by hand.
-- **Generic fallback.** If discovery fails, or you set `SQLREST_MANAGER_URL` to
-  an empty string, the server exposes only `sqlrest_call` (takes a `path`
-  argument) so you can still reach any endpoint manually.
-- **Validated arguments.** Tool inputs are zod schemas: `params` / `body` must be
-  objects, `method` is one of `GET` / `POST` / `PUT` / `DELETE`, so a malformed
-  call is rejected by the MCP layer instead of being proxied to SQLREST.
+- **No admin credentials.** The bridge never calls `/user/login` or
+  `/api/v1/assignment/search`, and has no Manager URL, username, password or
+  admin token setting. `SQLREST_TOKEN` is a _client_ token and is only attached
+  to execution requests, never to document discovery. Discovery GETs do not
+  follow redirects and stay on the Gateway origin unless you explicitly opt in.
+  Remove any stale `SQLREST_MANAGER_*` / `SQLREST_USERNAME` / `SQLREST_PASSWORD`
+  entries from an older MCP config — they are ignored, but they should not be
+  left in a config file.
+- **Document discovery (no per-API setup).** At startup the server probes the
+  Gateway for a Swagger/OpenAPI document (`/v3/api-docs`, `/v2/api-docs`,
+  `/apidoc/...`, `/swagger-resources`, `/apidoc/index.html`), or uses
+  `SQLREST_OPENAPI_URL` when pinned. It registers one tool per documented
+  operation (named `sqlrest_<path>`, suffixed with the method when two methods
+  share a path); framework endpoints such as `/actuator/**` are always excluded.
+  Discovery repeats every `SQLREST_CACHE_SECONDS` (default 300) and newly added
+  APIs trigger a tool-list-changed notification.
+- **Generic fallback.** If no document is reachable, or you set
+  `SQLREST_OPENAPI_DISABLE=1`, only `sqlrest_call` (takes a `path` argument) is
+  exposed, so every endpoint stays reachable manually.
+- **Validated arguments.** Each tool's zod schema is generated from the
+  documented parameters: names, types (`integer` / `number` / `boolean` /
+  `array` / `enum`), required flags and descriptions. Undocumented DSL arguments
+  still pass through. Path placeholders such as `{id}` are filled from `params`.
 - **Environment variables.**
   | Variable | Default | Purpose |
   | ----------------------- | --------------------------- | ---------------------------------------------------------------------------------------------------- |
   | `SQLREST_API_BASE_URL` | `http://localhost:8091/api` | Base URL for executing APIs (the Gateway; use `:8092/api` for the Executor if you call it directly). |
-  | `SQLREST_TOKEN` | _(empty)_ | Bearer token for API auth (client token). |
-  | `SQLREST_MANAGER_URL` | `http://localhost:8090` | Manager base URL for enumerating APIs; leave empty to disable discovery. |
-  | `SQLREST_MANAGER_TOKEN` | _(empty)_ | Manager token (skips login). |
-  | `SQLREST_USERNAME` | `admin` | Manager login username. |
-  | `SQLREST_PASSWORD` | `123456` | Manager login password. |
-  | `SQLREST_PAGE_SIZE` | `1000` | Page size for API enumeration. |
+  | `SQLREST_TOKEN` | _(empty)_ | Bearer token for API auth (client token); never sent during discovery. |
+  | `SQLREST_OPENAPI_URL` | _(empty)_ | Explicit Swagger/OpenAPI JSON URL; probed before the built-in candidates. |
+  | `SQLREST_OPENAPI_PATH_PREFIX` | `/api/` | Only paths containing this prefix become tools; set to empty to accept all non-framework paths. |
+  | `SQLREST_OPENAPI_ALLOW_CROSS_ORIGIN` | _(off)_ | Set to `1` if the document is served from a different origin. |
+  | `SQLREST_OPENAPI_DISABLE` | _(off)_ | Set to `1` to skip all discovery requests (generic tool only). |
   | `SQLREST_CACHE_SECONDS` | `300` | Re-discovery interval; new APIs are added and the client is notified. |
 - **Execution.** Each tool call is proxied to `{SQLREST_API_BASE_URL}/<path>`
   with the API method (GET/POST/PUT/DELETE). `params` become query string for
