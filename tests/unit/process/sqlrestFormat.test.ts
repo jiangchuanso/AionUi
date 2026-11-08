@@ -1,18 +1,24 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildCallRequest,
-  DEFAULT_API_BASE_URL,
-  DEFAULT_CACHE_SECONDS,
+  buildTokenRequest,
+  DEFAULT_BASE_URL,
+  DEFAULT_REFRESH_SECONDS,
   discoveryUrls,
   formatResponseBody,
   GENERIC_TOOL_NAME,
   isSameOrigin,
+  MAX_TOKEN_TTL_SECONDS,
+  MIN_TOKEN_TTL_SECONDS,
+  readAccessToken,
   readSwaggerResources,
   readSwaggerUiUrls,
   reserveToolName,
   resolveConfig,
   resolveDocumentUrl,
   sanitizeToolName,
+  TOKEN_EARLY_EXPIRY_MS,
+  TOKEN_PATH,
   toQueryString,
   type ApiToolSpec,
   type SqlrestConfig,
@@ -21,14 +27,47 @@ import {
 const baseConfig: SqlrestConfig = resolveConfig({});
 
 describe('resolveConfig', () => {
-  it('falls back to the local Gateway and keeps discovery on that origin', () => {
-    expect(baseConfig.apiBaseUrl).toBe(DEFAULT_API_BASE_URL);
-    expect(baseConfig.discoveryOrigin).toBe('http://localhost:8091');
+  it('uses qwen-compatible defaults and derives the /api execution base', () => {
+    expect(baseConfig.baseUrl).toBe(DEFAULT_BASE_URL);
+    expect(baseConfig.apiBaseUrl).toBe(`${DEFAULT_BASE_URL}/api`);
+    expect(baseConfig.discoveryOrigin).toBe('http://127.0.0.1:8091');
     expect(baseConfig.pathPrefix).toBe('/api/');
-    expect(baseConfig.cacheSeconds).toBe(DEFAULT_CACHE_SECONDS);
+    expect(baseConfig.refreshSeconds).toBe(DEFAULT_REFRESH_SECONDS);
+    expect(baseConfig.enabled).toBe(true);
     expect(baseConfig.discoveryEnabled).toBe(true);
     expect(baseConfig.allowCrossOrigin).toBe(false);
+    expect(baseConfig.clientId).toBe('');
+    expect(baseConfig.clientSecret).toBe('');
     expect(baseConfig.token).toBe('');
+  });
+
+  it("reads the same keys as qwen's sqlrest config block", () => {
+    const config = resolveConfig({
+      SQLREST_BASE_URL: 'http://10.9.8.8:8091/',
+      SQLREST_CLIENT_ID: 'app-1',
+      SQLREST_CLIENT_SECRET: 's3cr3t',
+      SQLREST_REFRESH_SECONDS: '600',
+      SQLREST_ENABLED: '0',
+    });
+
+    expect(config.baseUrl).toBe('http://10.9.8.8:8091');
+    expect(config.apiBaseUrl).toBe('http://10.9.8.8:8091/api');
+    expect(config.clientId).toBe('app-1');
+    expect(config.clientSecret).toBe('s3cr3t');
+    expect(config.refreshSeconds).toBe(600);
+    expect(config.enabled).toBe(false);
+  });
+
+  it('honours the legacy execution-base and cache-seconds aliases', () => {
+    const config = resolveConfig({
+      SQLREST_API_BASE_URL: 'http://127.0.0.1:8092/api',
+      SQLREST_CACHE_SECONDS: '120',
+      SQLREST_TOKEN: 'static-token',
+    });
+
+    expect(config.apiBaseUrl).toBe('http://127.0.0.1:8092/api');
+    expect(config.refreshSeconds).toBe(120);
+    expect(config.token).toBe('static-token');
   });
 
   it('has no Manager credential fields at all', () => {
@@ -74,16 +113,16 @@ describe('discoveryUrls', () => {
   it('probes the standard Gateway locations on the configured origin', () => {
     const urls = discoveryUrls(baseConfig);
 
-    expect(urls[0]).toBe('http://localhost:8091/v3/api-docs');
-    expect(urls).toContain('http://localhost:8091/v2/api-docs');
-    expect(urls).toContain('http://localhost:8091/swagger-resources');
-    expect(urls).toContain('http://localhost:8091/apidoc/index.html');
+    expect(urls[0]).toBe('http://127.0.0.1:8091/apidoc/swagger.json');
+    expect(urls).toContain('http://127.0.0.1:8091/v2/api-docs');
+    expect(urls).toContain('http://127.0.0.1:8091/swagger-resources');
+    expect(urls).toContain('http://127.0.0.1:8091/apidoc/index.html');
     expect(new Set(urls).size).toBe(urls.length);
   });
 
   it('puts an explicit document URL first', () => {
-    const config = resolveConfig({ SQLREST_OPENAPI_URL: 'http://localhost:8091/my-docs.json' });
-    expect(discoveryUrls(config)[0]).toBe('http://localhost:8091/my-docs.json');
+    const config = resolveConfig({ SQLREST_OPENAPI_URL: 'http://127.0.0.1:8091/my-docs.json' });
+    expect(discoveryUrls(config)[0]).toBe('http://127.0.0.1:8091/my-docs.json');
   });
 
   it('drops cross-origin candidates unless explicitly allowed', () => {
@@ -94,10 +133,52 @@ describe('discoveryUrls', () => {
   });
 });
 
+describe('client credentials (qwen contract)', () => {
+  const config = resolveConfig({ SQLREST_CLIENT_ID: 'app-1', SQLREST_CLIENT_SECRET: 's3cr3t' });
+
+  it('posts {clientId, secret} to /token/generate on the gateway root', () => {
+    const request = buildTokenRequest(config);
+
+    expect(request.url).toBe(`http://127.0.0.1:8091${TOKEN_PATH}`);
+    expect(request.method).toBe('POST');
+    expect(request.body).toBe('{"clientId":"app-1","secret":"s3cr3t"}');
+    expect(request.headers.Authorization).toBeUndefined();
+  });
+
+  it('does not leak the secret into discovery URLs', () => {
+    expect(discoveryUrls(config).join(' ')).not.toContain('s3cr3t');
+  });
+
+  it('reads accessToken and clamps expireSeconds', () => {
+    expect(readAccessToken({ code: 0, data: { accessToken: 'tk-1', expireSeconds: 3600 } })).toEqual({
+      token: 'tk-1',
+      expiresInMs: 3600 * 1000 - TOKEN_EARLY_EXPIRY_MS,
+    });
+    expect(readAccessToken({ data: { accessToken: 'tk', expireSeconds: 1 } })?.expiresInMs).toBe(
+      MIN_TOKEN_TTL_SECONDS * 1000 - TOKEN_EARLY_EXPIRY_MS
+    );
+    expect(readAccessToken({ data: { accessToken: 'tk', expireSeconds: 999999 } })?.expiresInMs).toBe(
+      MAX_TOKEN_TTL_SECONDS * 1000 - TOKEN_EARLY_EXPIRY_MS
+    );
+  });
+
+  it('falls back to the minimum TTL when expireSeconds is missing', () => {
+    expect(readAccessToken({ data: { accessToken: 'tk' } })?.expiresInMs).toBe(
+      MIN_TOKEN_TTL_SECONDS * 1000 - TOKEN_EARLY_EXPIRY_MS
+    );
+  });
+
+  it('rejects responses without an accessToken', () => {
+    expect(readAccessToken({ data: {} })).toBeNull();
+    expect(readAccessToken(null)).toBeNull();
+    expect(readAccessToken({ code: 0, data: 'nope' })).toBeNull();
+  });
+});
+
 describe('resolveDocumentUrl', () => {
   it('resolves relative locations against the Gateway origin', () => {
     expect(resolveDocumentUrl('/v2/api-docs?group=default', baseConfig)).toBe(
-      'http://localhost:8091/v2/api-docs?group=default'
+      'http://127.0.0.1:8091/v2/api-docs?group=default'
     );
   });
 
@@ -108,8 +189,8 @@ describe('resolveDocumentUrl', () => {
   });
 
   it('recognises same-origin URLs', () => {
-    expect(isSameOrigin('http://localhost:8091/apidoc/index.html', 'http://localhost:8091')).toBe(true);
-    expect(isSameOrigin('http://elsewhere.example/v2/api-docs', 'http://localhost:8091')).toBe(false);
+    expect(isSameOrigin('http://127.0.0.1:8091/apidoc/index.html', 'http://127.0.0.1:8091')).toBe(true);
+    expect(isSameOrigin('http://elsewhere.example/v2/api-docs', 'http://127.0.0.1:8091')).toBe(false);
   });
 });
 
@@ -123,7 +204,7 @@ describe('readSwaggerResources', () => {
         ],
         baseConfig
       )
-    ).toEqual(['http://localhost:8091/v2/api-docs?group=a', 'http://localhost:8091/v3/api-docs']);
+    ).toEqual(['http://127.0.0.1:8091/v2/api-docs?group=a', 'http://127.0.0.1:8091/v3/api-docs']);
   });
 
   it('never follows a cross-origin location embedded in the response', () => {
@@ -140,9 +221,9 @@ describe('readSwaggerUiUrls', () => {
     `;
 
     expect(readSwaggerUiUrls(html, baseConfig)).toEqual([
-      'http://localhost:8091/v2/api-docs',
-      'http://localhost:8091/v3/api-docs/swagger-config',
-      'http://localhost:8091/apidoc/group-a.json',
+      'http://127.0.0.1:8091/v2/api-docs',
+      'http://127.0.0.1:8091/v3/api-docs/swagger-config',
+      'http://127.0.0.1:8091/apidoc/group-a.json',
     ]);
   });
 });
@@ -197,7 +278,7 @@ describe('buildCallRequest', () => {
   it('appends params as a query string for GET and adds the bearer token', () => {
     const request = buildCallRequest({ ...baseConfig, token: 'abc' }, '/user/list', 'get', { params: { page: 2 } });
 
-    expect(request.url).toBe('http://localhost:8091/api/user/list?page=2');
+    expect(request.url).toBe('http://127.0.0.1:8091/api/user/list?page=2');
     expect(request.method).toBe('GET');
     expect(request.body).toBeUndefined();
     expect(request.headers.Authorization).toBe('Bearer abc');
@@ -216,7 +297,7 @@ describe('buildCallRequest', () => {
   it('fills path placeholders and removes those keys from the query', () => {
     const request = buildCallRequest(baseConfig, 'order/{id}/items', 'GET', { params: { id: 'a b', page: 2 } }, ['id']);
 
-    expect(request.url).toBe('http://localhost:8091/api/order/a%20b/items?page=2');
+    expect(request.url).toBe('http://127.0.0.1:8091/api/order/a%20b/items?page=2');
   });
 
   it('rejects missing or unresolved path parameters', () => {

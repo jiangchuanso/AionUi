@@ -10,26 +10,36 @@
  * server so the behaviour can be unit-tested without spawning an MCP process.
  *
  * Security: discovery is read-only and unauthenticated. This module deliberately
- * has no Manager URL, username, password or admin token — the only credential is
- * the client token, and it is attached solely to API execution requests.
+ * has no Manager URL, username, password or admin token. Client credentials are
+ * only used at `/token/generate`; the resulting token is attached solely to API
+ * execution requests.
  */
 
-export const DEFAULT_API_BASE_URL = 'http://localhost:8091/api';
-export const DEFAULT_CACHE_SECONDS = 300;
+/** Matches e:/qwen's `sqlrest.base_url` — the Gateway root, not its /api prefix. */
+export const DEFAULT_BASE_URL = 'http://127.0.0.1:8091';
+export const DEFAULT_REFRESH_SECONDS = 300;
 export const DEFAULT_TIMEOUT_MS = 20000;
 export const DEFAULT_DISCOVERY_TIMEOUT_MS = 5000;
 export const DEFAULT_PATH_PREFIX = '/api/';
 export const MAX_DISCOVERY_DOCUMENTS = 12;
 export const MAX_DISCOVERY_ATTEMPTS = 20;
 
+/** e:/qwen uses the same endpoint for exchanging client credentials. */
+export const TOKEN_PATH = '/token/generate';
+export const MIN_TOKEN_TTL_SECONDS = 60;
+export const MAX_TOKEN_TTL_SECONDS = 86400;
+/** Refresh a little before the server-side expiry to avoid edge-of-expiry 401s. */
+export const TOKEN_EARLY_EXPIRY_MS = 30000;
+
 /** Tool name reserved by the generic fallback; discovered APIs never shadow it. */
 export const GENERIC_TOOL_NAME = 'sqlrest_call';
 
 /**
- * Common Swagger/OpenAPI document locations on the Gateway. The JSON endpoint
- * varies between springfox, springdoc and custom builds, so probe them all.
+ * `/apidoc/swagger.json` is SQLREST's own published document (the same one
+ * e:/qwen reads); the rest are fallbacks for springdoc/springfox builds.
  */
 export const DISCOVERY_CANDIDATE_PATHS = [
+  '/apidoc/swagger.json',
   '/v3/api-docs',
   '/v2/api-docs',
   '/apidoc/v3/api-docs',
@@ -46,10 +56,17 @@ type JsonObject = Record<string, unknown>;
 export type SqlrestEnv = Record<string, string | undefined>;
 
 export type SqlrestConfig = {
-  /** Gateway/Executor base URL that published APIs are proxied to. */
+  /** Gateway root, matching qwen's `sqlrest.base_url`. */
+  baseUrl: string;
+  /** Execution base URL, derived as `<baseUrl>/api` unless explicitly overridden. */
   apiBaseUrl: string;
-  /** Client token forwarded as `Authorization: Bearer` on execution only. */
+  /** Client application credentials used only at `/token/generate`. */
+  clientId: string;
+  clientSecret: string;
+  /** Static bearer token; legacy fallback when client credentials are absent. */
   token: string;
+  /** Master switch: when false no upstream request is made at all. */
+  enabled: boolean;
   /** Explicit OpenAPI/Swagger JSON URL; probed before the built-in candidates. */
   openapiUrl: string;
   /** Origin of the Gateway; discovery stays on this origin by default. */
@@ -60,8 +77,8 @@ export type SqlrestConfig = {
   allowCrossOrigin: boolean;
   /** Set to disable all discovery requests and expose only the generic tool. */
   discoveryEnabled: boolean;
-  /** Re-discovery interval for the tool list. */
-  cacheSeconds: number;
+  /** Interface-list TTL / re-discovery interval, matching qwen's refresh_seconds. */
+  refreshSeconds: number;
 };
 
 export type SqlrestCallArgs = {
@@ -141,20 +158,34 @@ function normalisePrefix(raw: string | undefined): string {
   return `/${trimmed.replace(/^\/+|\/+$/g, '')}/`;
 }
 
+const DISABLED_VALUES = new Set(['0', 'false', 'off', 'no']);
+/** Opt-out flags such as `SQLREST_OPENAPI_DISABLE=1` use the "on" spelling. */
+const DISABLED_FLAGS = new Set(['1', 'true', ...DISABLED_VALUES]);
+
 export function resolveConfig(env: SqlrestEnv): SqlrestConfig {
-  const apiBaseUrl = stripTrailingSlashes((env.SQLREST_API_BASE_URL ?? '').trim() || DEFAULT_API_BASE_URL);
+  const baseUrl = stripTrailingSlashes((env.SQLREST_BASE_URL ?? '').trim() || DEFAULT_BASE_URL);
+  const explicitApiBase = stripTrailingSlashes((env.SQLREST_API_BASE_URL ?? '').trim());
+  const apiBaseUrl = explicitApiBase || `${baseUrl}/api`;
   const flag = (env.SQLREST_OPENAPI_ALLOW_CROSS_ORIGIN ?? '').trim().toLowerCase();
-  const disable = (env.SQLREST_OPENAPI_DISABLE ?? '').trim().toLowerCase();
+  const discoveryOff = (env.SQLREST_OPENAPI_DISABLE ?? '').trim().toLowerCase();
+  const enabledRaw = (env.SQLREST_ENABLED ?? '').trim().toLowerCase();
+  const refreshRaw = env.SQLREST_REFRESH_SECONDS ?? env.SQLREST_CACHE_SECONDS;
 
   return {
+    baseUrl,
     apiBaseUrl,
+    clientId: (env.SQLREST_CLIENT_ID ?? '').trim(),
+    clientSecret: (env.SQLREST_CLIENT_SECRET ?? '').trim(),
     token: (env.SQLREST_TOKEN ?? '').trim(),
+    // Manually importing the MCP server implies "enabled"; qwen defaults to
+    // false because it is an application-wide feature switch there.
+    enabled: !DISABLED_VALUES.has(enabledRaw),
     openapiUrl: (env.SQLREST_OPENAPI_URL ?? '').trim(),
-    discoveryOrigin: originOf(apiBaseUrl),
+    discoveryOrigin: originOf(baseUrl),
     pathPrefix: normalisePrefix(env.SQLREST_OPENAPI_PATH_PREFIX),
     allowCrossOrigin: flag === '1' || flag === 'true',
-    discoveryEnabled: disable !== '1' && disable !== 'true',
-    cacheSeconds: readInt(env.SQLREST_CACHE_SECONDS, DEFAULT_CACHE_SECONDS, 1),
+    discoveryEnabled: !DISABLED_FLAGS.has(discoveryOff),
+    refreshSeconds: readInt(refreshRaw, DEFAULT_REFRESH_SECONDS, 10),
   };
 }
 
@@ -264,7 +295,7 @@ function joinPaths(basePath: string, rawPath: string): string {
 
 /** Paths that belong to the framework itself, never to SQLREST's API surface. */
 function isManagementPath(path: string): boolean {
-  return /(^|\/)(actuator|error|swagger-resources|swagger-ui|apidoc|webjars|user\/login|v2\/api-docs|v3\/api-docs|favicon\.ico)(\/|$)/i.test(
+  return /(^|\/)(actuator|error|swagger-resources|swagger-ui|apidoc|webjars|user\/login|token\/generate|v2\/api-docs|v3\/api-docs|favicon\.ico)(\/|$)/i.test(
     path
   );
 }
@@ -497,6 +528,35 @@ export function buildCallRequest(
     headers,
     body: payload ? JSON.stringify(payload) : undefined,
   };
+}
+
+/**
+ * Client-credential exchange, matching qwen's `POST /token/generate` with
+ * `{ clientId, secret }`. The secret appears only in this request body; it is
+ * never logged, never returned to the model and never sent to `/api/**`.
+ */
+export function buildTokenRequest(config: SqlrestConfig): SqlrestRequest {
+  return {
+    url: `${config.baseUrl}${TOKEN_PATH}`,
+    method: 'POST',
+    headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ clientId: config.clientId, secret: config.clientSecret }),
+  };
+}
+
+/**
+ * Reads `{ data: { accessToken, expireSeconds } }` (qwen's contract) and clamps
+ * the TTL to a sane range, refreshing slightly before the server-side expiry.
+ */
+export function readAccessToken(payload: unknown): { token: string; expiresInMs: number } | null {
+  const data = asObject(asObject(payload)?.data);
+  const token = asString(data?.accessToken);
+  if (!token) return null;
+
+  const rawTtl = Number(data?.expireSeconds);
+  const ttl = Number.isFinite(rawTtl) && rawTtl > 0 ? Math.floor(rawTtl) : MIN_TOKEN_TTL_SECONDS;
+  const clampedMs = Math.min(Math.max(ttl, MIN_TOKEN_TTL_SECONDS), MAX_TOKEN_TTL_SECONDS) * 1000;
+  return { token, expiresInMs: Math.max(clampedMs - TOKEN_EARLY_EXPIRY_MS, 30000) };
 }
 
 /** Pretty-prints a response body; non-JSON payloads are returned verbatim. */

@@ -149,6 +149,7 @@ describe('parseOpenApiDocument filtering', () => {
         '/actuator/health': { get: {} },
         '/swagger-resources': { get: {} },
         '/v2/api-docs': { get: {} },
+        '/token/generate': { post: { summary: 'Credential exchange' } },
       },
     };
 

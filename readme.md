@@ -421,8 +421,10 @@ Adjust the script path and the SQLREST connection, then import it:
       "command": "node",
       "args": ["/opt/aionui-web/out/main/builtin-mcp-sqlrest.js"],
       "env": {
-        "SQLREST_API_BASE_URL": "http://127.0.0.1:8091/api",
-        "SQLREST_TOKEN": ""
+        "SQLREST_BASE_URL": "http://127.0.0.1:8091",
+        "SQLREST_CLIENT_ID": "",
+        "SQLREST_CLIENT_SECRET": "",
+        "SQLREST_REFRESH_SECONDS": "300"
       }
     }
   }
@@ -433,20 +435,27 @@ Adjust the script path and the SQLREST connection, then import it:
 
 - **No admin credentials.** The bridge never calls `/user/login` or
   `/api/v1/assignment/search`, and has no Manager URL, username, password or
-  admin token setting. `SQLREST_TOKEN` is a _client_ token and is only attached
-  to execution requests, never to document discovery. Discovery GETs do not
-  follow redirects and stay on the Gateway origin unless you explicitly opt in.
-  Remove any stale `SQLREST_MANAGER_*` / `SQLREST_USERNAME` / `SQLREST_PASSWORD`
-  entries from an older MCP config — they are ignored, but they should not be
-  left in a config file.
-- **Document discovery (no per-API setup).** At startup the server probes the
-  Gateway for a Swagger/OpenAPI document (`/v3/api-docs`, `/v2/api-docs`,
-  `/apidoc/...`, `/swagger-resources`, `/apidoc/index.html`), or uses
-  `SQLREST_OPENAPI_URL` when pinned. It registers one tool per documented
-  operation (named `sqlrest_<path>`, suffixed with the method when two methods
-  share a path); framework endpoints such as `/actuator/**` are always excluded.
-  Discovery repeats every `SQLREST_CACHE_SECONDS` (default 300) and newly added
-  APIs trigger a tool-list-changed notification.
+  admin token setting. Remove any stale `SQLREST_MANAGER_*` / `SQLREST_USERNAME` /
+  `SQLREST_PASSWORD` entries from an older MCP config — they are ignored, but
+  they should not be left in a config file.
+- **Client credentials (same contract as `e:/qwen`).** Execution is
+  authenticated with `SQLREST_CLIENT_ID` / `SQLREST_CLIENT_SECRET`: the server
+  POSTs `{ "clientId": ..., "secret": ... }` to `<base_url>/token/generate`,
+  reads `data.accessToken` / `data.expireSeconds`, caches the token in memory
+  and attaches `Authorization: Bearer <accessToken>` only to `/api/**` calls.
+  A 401/403 clears the cached token so the next call re-exchanges it. Without
+  credentials, `open=true` endpoints still work unauthenticated; a static
+  `SQLREST_TOKEN` is supported as a legacy fallback. The secret is never
+  logged, never returned to the model and never sent during discovery.
+- **Document discovery (no per-API setup).** At startup the server reads
+  `<base_url>/apidoc/swagger.json` — the same document qwen uses — then falls
+  back to `/v3/api-docs`, `/v2/api-docs`, `/swagger-resources` and
+  `/apidoc/index.html`, or uses `SQLREST_OPENAPI_URL` when pinned. It registers
+  one tool per documented operation (named `sqlrest_<path>`, suffixed with the
+  method when two methods share a path); framework endpoints such as
+  `/actuator/**` and `/token/generate` are always excluded. Discovery repeats
+  every `SQLREST_REFRESH_SECONDS` (default 300) and newly added APIs trigger a
+  tool-list-changed notification.
 - **Generic fallback.** If no document is reachable, or you set
   `SQLREST_OPENAPI_DISABLE=1`, only `sqlrest_call` (takes a `path` argument) is
   exposed, so every endpoint stays reachable manually.
@@ -454,21 +463,28 @@ Adjust the script path and the SQLREST connection, then import it:
   documented parameters: names, types (`integer` / `number` / `boolean` /
   `array` / `enum`), required flags and descriptions. Undocumented DSL arguments
   still pass through. Path placeholders such as `{id}` are filled from `params`.
-- **Environment variables.**
+- **Environment variables** (names mirror qwen's `sqlrest` config block).
   | Variable | Default | Purpose |
   | ----------------------- | --------------------------- | ---------------------------------------------------------------------------------------------------- |
-  | `SQLREST_API_BASE_URL` | `http://localhost:8091/api` | Base URL for executing APIs (the Gateway; use `:8092/api` for the Executor if you call it directly). |
-  | `SQLREST_TOKEN` | _(empty)_ | Bearer token for API auth (client token); never sent during discovery. |
+  | `SQLREST_BASE_URL` | `http://127.0.0.1:8091` | Gateway root; the execution base defaults to `<base_url>/api`. |
+  | `SQLREST_CLIENT_ID` | _(empty)_ | Client application id for `/token/generate`. |
+  | `SQLREST_CLIENT_SECRET` | _(empty)_ | Client application secret; only sent in the token exchange body. |
+  | `SQLREST_REFRESH_SECONDS` | `300` | Interface-list TTL / re-discovery interval (qwen's `refresh_seconds`). |
+  | `SQLREST_ENABLED` | `1` | Set to `0` to disable all upstream requests without removing the MCP server. |
+  | `SQLREST_TOKEN` | _(empty)_ | Legacy static bearer token, used only when client credentials are absent. |
+  | `SQLREST_API_BASE_URL` | `<base_url>/api` | Override the derived execution base (e.g. `:8092/api` for the Executor). |
   | `SQLREST_OPENAPI_URL` | _(empty)_ | Explicit Swagger/OpenAPI JSON URL; probed before the built-in candidates. |
   | `SQLREST_OPENAPI_PATH_PREFIX` | `/api/` | Only paths containing this prefix become tools; set to empty to accept all non-framework paths. |
   | `SQLREST_OPENAPI_ALLOW_CROSS_ORIGIN` | _(off)_ | Set to `1` if the document is served from a different origin. |
   | `SQLREST_OPENAPI_DISABLE` | _(off)_ | Set to `1` to skip all discovery requests (generic tool only). |
-  | `SQLREST_CACHE_SECONDS` | `300` | Re-discovery interval; new APIs are added and the client is notified. |
-- **Execution.** Each tool call is proxied to `{SQLREST_API_BASE_URL}/<path>`
-  with the API method (GET/POST/PUT/DELETE). `params` become query string for
-  GET and JSON body for writes; `body` overrides `params` for write methods. The
-  `Authorization: Bearer <SQLREST_TOKEN>` header is forwarded when set. The JSON
-  response is returned as text.
+- **Execution.** Each tool call is proxied to `<base_url>/api/<path>` (or the
+  `SQLREST_API_BASE_URL` override) with the API method (GET/POST/PUT/DELETE).
+  `params` become query string for
+  GET and JSON body for writes; `body` overrides `params` for write methods.
+  The exchanged `accessToken` is sent as `Authorization: Bearer`. Errors
+  returned to the model use fixed wording; upstream addresses, ports and
+  credentials are only written to the local stderr log. The JSON response is
+  returned as text.
 - **Reachability.** URLs must be reachable from the machine running AionUi —
   inside Docker, `127.0.0.1` is the container itself, use the host/LAN address.
 

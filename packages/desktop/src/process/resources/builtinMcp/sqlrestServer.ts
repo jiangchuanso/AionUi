@@ -13,20 +13,24 @@
  * login, admin token or password is used anywhere: document requests are
  * unauthenticated GETs that stay on the Gateway origin by default.
  *
- * Discovery URL candidates are probed in order (springdoc, springfox, custom
- * apidoc, `/swagger-resources`, `/apidoc/index.html`), or you can pin one with
- * SQLREST_OPENAPI_URL. If no document is reachable only `sqlrest_call` is
- * exposed, so every endpoint remains callable by explicit path.
+ * Discovery reads `<base_url>/apidoc/swagger.json` first (the same document
+ * e:/qwen uses), then falls back to common springdoc/springfox locations. Calls
+ * are authenticated with client credentials exchanged at `/token/generate`,
+ * again matching qwen's contract: `{ clientId, secret }` in, `accessToken` and
+ * `expireSeconds` out, cached in memory and dropped on 401/403.
  *
- * Environment variables:
- *   SQLREST_API_BASE_URL               Execution base URL. Default http://localhost:8091/api
- *                                      (the Gateway; use :8092/api for the Executor).
- *   SQLREST_TOKEN                      Client token for API auth. Optional; never sent during discovery.
+ * Environment variables (names mirror qwen's `sqlrest` config block):
+ *   SQLREST_BASE_URL                   Gateway root. Default http://127.0.0.1:8091
+ *   SQLREST_CLIENT_ID                  Client application id. Optional.
+ *   SQLREST_CLIENT_SECRET              Client application secret. Optional.
+ *   SQLREST_REFRESH_SECONDS            Interface-list TTL / re-discovery. Default 300.
+ *   SQLREST_ENABLED                    Set to 0 to disable all upstream requests. Default on.
+ *   SQLREST_TOKEN                      Static bearer token; legacy fallback when no client credentials.
+ *   SQLREST_API_BASE_URL               Override the derived `<base_url>/api` execution base.
  *   SQLREST_OPENAPI_URL                Explicit Swagger/OpenAPI JSON URL. Optional.
  *   SQLREST_OPENAPI_PATH_PREFIX        Only expose paths containing this prefix. Default /api/.
  *   SQLREST_OPENAPI_ALLOW_CROSS_ORIGIN Set to 1 to allow documents on another origin. Default off.
  *   SQLREST_OPENAPI_DISABLE            Set to 1 to skip discovery entirely. Default off.
- *   SQLREST_CACHE_SECONDS              Re-discovery interval. Default 300.
  */
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -34,6 +38,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import {
   buildCallRequest,
+  buildTokenRequest,
   DEFAULT_DISCOVERY_TIMEOUT_MS,
   DEFAULT_TIMEOUT_MS,
   discoveryUrls,
@@ -43,6 +48,7 @@ import {
   MAX_DISCOVERY_ATTEMPTS,
   MAX_DISCOVERY_DOCUMENTS,
   parseOpenApiDocument,
+  readAccessToken,
   readSwaggerResources,
   readSwaggerUiUrls,
   reserveToolName,
@@ -59,6 +65,31 @@ const DISCOVERY_DEADLINE_MS = 15000;
 
 /** Group-index endpoints are only worth probing when no document was found. */
 const DOCUMENT_INDEX_PATHS = ['/swagger-resources', '/apidoc/index.html'];
+
+/**
+ * Fixed messages returned to the model, matching qwen's rule that upstream
+ * addresses, ports, status codes and config names never leak to clients.
+ * Details go to stderr (local log) only.
+ */
+const ERRORS = {
+  disabled: 'SQLREST data service is disabled.',
+  forbidden: 'SQLREST rejected the request; authentication will be refreshed on the next call.',
+  unavailable: 'SQLREST data service is temporarily unavailable. Check the server log for details.',
+  failed: 'SQLREST call failed. Check the server log for details.',
+};
+
+/** In-memory token — never persisted, never logged, never returned to the model. */
+const tokenState = { value: '', expiresAt: 0 };
+/** De-duplicates concurrent exchanges; bumped on invalidation so late results cannot repopulate the cache. */
+let tokenRequest: Promise<string> | null = null;
+let tokenGeneration = 0;
+
+function invalidateToken(): void {
+  tokenState.value = '';
+  tokenState.expiresAt = 0;
+  tokenRequest = null;
+  tokenGeneration += 1;
+}
 
 function log(message: string): void {
   process.stderr.write(`[SqlrestMCP] ${message}\n`);
@@ -104,7 +135,7 @@ async function fetchDocument(url: string): Promise<DocumentResponse> {
   }
 }
 
-/** Executes a proxied API call; this is the only request that carries the token. */
+/** Executes a proxied API call or a credential exchange; no token is logged. */
 async function httpJson(request: SqlrestRequest): Promise<HttpResponse> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
@@ -128,6 +159,50 @@ async function httpJson(request: SqlrestRequest): Promise<HttpResponse> {
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * Exchanges client credentials for a short-lived token and caches it until just
+ * before the server-reported expiry. Without credentials, qwen lets `open=true`
+ * endpoints through unauthenticated; a legacy static token is used if present.
+ */
+async function exchangeToken(config: SqlrestConfig): Promise<string> {
+  const generation = tokenGeneration;
+  const now = Date.now();
+  try {
+    const res = await httpJson(buildTokenRequest(config));
+    if (!res.ok) {
+      log(`Token exchange failed (HTTP ${res.status}).`);
+      return '';
+    }
+    const parsed = readAccessToken(res.data);
+    if (!parsed) {
+      log('Token response did not contain an accessToken.');
+      return '';
+    }
+    // A 401 during this exchange invalidated the cache; do not restore a stale token.
+    if (generation === tokenGeneration) {
+      tokenState.value = parsed.token;
+      tokenState.expiresAt = now + parsed.expiresInMs;
+    }
+    return parsed.token;
+  } catch (error) {
+    log(`Token exchange error: ${messageOf(error)}`);
+    return '';
+  }
+}
+
+async function getAccessToken(config: SqlrestConfig): Promise<string> {
+  if (!config.clientId || !config.clientSecret) return config.token;
+  if (tokenState.value && Date.now() < tokenState.expiresAt) return tokenState.value;
+  if (tokenRequest) return tokenRequest;
+
+  const pending = exchangeToken(config);
+  tokenRequest = pending;
+  void pending.finally(() => {
+    if (tokenRequest === pending) tokenRequest = null;
+  });
+  return pending;
 }
 
 /**
@@ -247,22 +322,34 @@ async function callApi(
   args: SqlrestCallArgs,
   pathVars: string[] = []
 ) {
+  if (!config.enabled) return errorResult(ERRORS.disabled);
+
+  const accessToken = await getAccessToken(config);
   let request: SqlrestRequest;
   try {
-    request = buildCallRequest(config, path, method, args, pathVars);
+    request = buildCallRequest({ ...config, token: accessToken }, path, method, args, pathVars);
   } catch (error) {
-    return errorResult(`Could not build the SQLREST request for "${path}": ${messageOf(error)}`);
+    log(`Could not build request for "${path}": ${messageOf(error)}`);
+    return errorResult(ERRORS.failed);
   }
 
   try {
     const res = await httpJson(request);
-    const text = formatResponseBody(res.data);
-    if (!res.ok) {
-      return errorResult(`SQLREST call failed: HTTP ${res.status}${text ? `\n${text}` : ''}`);
+    if (res.status === 401 || res.status === 403) {
+      // Force a fresh exchange on the next call, exactly like qwen does.
+      invalidateToken();
+      log(`Call returned HTTP ${res.status}; cached token cleared.`);
+      return errorResult(ERRORS.forbidden);
     }
+    if (!res.ok) {
+      log(`Call returned HTTP ${res.status} for ${request.url}.`);
+      return errorResult(ERRORS.failed);
+    }
+    const text = formatResponseBody(res.data);
     return { content: [{ type: 'text' as const, text: text || '(empty response)' }] };
   } catch (error) {
-    return errorResult(`Failed to reach SQLREST at ${request.url}: ${messageOf(error)}`);
+    log(`Call to ${request.url} failed: ${messageOf(error)}`);
+    return errorResult(ERRORS.unavailable);
   }
 }
 
@@ -285,6 +372,7 @@ Pass params as key-value pairs (query string for GET, JSON body for writes) or b
 
 /** One discovery pass; returns how many new tools were registered. */
 async function discoverTools(server: McpServer, config: SqlrestConfig, taken: Set<string>): Promise<number> {
+  if (!config.enabled) return 0;
   const documents = await collectDocuments(config);
   if (documents.length === 0) {
     log('No Swagger/OpenAPI document reachable; only the generic tool is available.');
@@ -317,32 +405,36 @@ async function discoverTools(server: McpServer, config: SqlrestConfig, taken: Se
 
 async function main(): Promise<void> {
   const config = resolveConfig(process.env);
-  const server = new McpServer({ name: 'sqlrest', version: '1.3.0' });
+  const server = new McpServer({ name: 'sqlrest', version: '1.4.0' });
   const taken = new Set<string>();
 
   registerGenericTool(server, config, taken);
-  log('Discovery is unauthenticated and read-only; no Manager credentials are used.');
 
-  if (config.discoveryEnabled) {
-    try {
-      // Discover before connecting so tools/list is already complete on the first call.
-      await discoverTools(server, config, taken);
-    } catch (error) {
-      log(`Discovery failed (${messageOf(error)}); keeping the generic ${GENERIC_TOOL_NAME} tool.`);
-    }
+  if (!config.enabled) {
+    log('SQLREST is disabled; no upstream requests will be made.');
   } else {
-    log('Discovery disabled; only the generic tool is available.');
+    log('Discovery is unauthenticated and read-only; no Manager credentials are used.');
+    if (config.discoveryEnabled) {
+      try {
+        // Discover before connecting so tools/list is already complete on the first call.
+        await discoverTools(server, config, taken);
+      } catch (error) {
+        log(`Discovery failed (${messageOf(error)}); keeping the generic ${GENERIC_TOOL_NAME} tool.`);
+      }
+    } else {
+      log('Discovery disabled; only the generic tool is available.');
+    }
   }
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
   log(`SQLREST MCP server ready (${taken.size} tool(s)).`);
 
-  if (config.discoveryEnabled) {
+  if (config.enabled && config.discoveryEnabled) {
     // Pick up APIs published after startup without requiring a restart.
     setInterval(() => {
       void discoverTools(server, config, taken);
-    }, config.cacheSeconds * 1000);
+    }, config.refreshSeconds * 1000);
   }
 
   // The interval above would otherwise keep the process alive after the client
