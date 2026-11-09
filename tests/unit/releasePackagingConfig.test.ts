@@ -187,13 +187,14 @@ describe('release packaging configuration', () => {
       'builtin-mcp-image-gen.js',
       'builtin-mcp-browser.js',
       'builtin-mcp-searxng.js',
-      'builtin-mcp-sqlrest.js',
       'team-mcp-stdio.js',
       'package.json',
     ];
     for (const script of entryScripts) {
       expect(block).toContain(`out/main/${script}`);
     }
+    // SQLREST is served over its own remote MCP endpoint, not by a shipped script.
+    expect(block).not.toContain('out/main/builtin-mcp-sqlrest.js');
   });
 
   it('ships the manual-import MCP scripts inside the aionui-web tarball', () => {
@@ -202,9 +203,10 @@ describe('release packaging configuration', () => {
     // The scripts are never registered automatically — users add them through
     // Settings → Tools with a JSON import that points at this relative path
     // (documented in README), so they must exist in the tarball.
-    for (const name of ['builtin-mcp-searxng.js', 'builtin-mcp-sqlrest.js']) {
+    for (const name of ['builtin-mcp-searxng.js']) {
       expect(script).toContain(`'${name}'`);
     }
+    expect(script).not.toContain('builtin-mcp-sqlrest.js');
     expect(script).toContain("path.join(projectRoot, 'out/main', scriptName)");
     expect(script).toContain("path.join(tarballContentDir, 'out/main')");
     // The CommonJS pin must ship alongside the scripts, otherwise the web-host

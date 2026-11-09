@@ -128,4 +128,23 @@ describe('parseMcpJsonImport', () => {
       errorKey: 'settings.mcpJsonUrlRequiredError',
     });
   });
+
+  it('parses the native SQLREST MCP SSE endpoint with its token query intact', () => {
+    const url = 'http://127.0.0.1:8090/mcp/sse?token=5f3a9c0e1b2d4a6f8e0c3b7d91a2e4f60';
+    const result = parseMcpJsonImport({
+      mcpServers: { sqlrest: { type: 'sse', url } },
+    });
+
+    expect(result).toEqual({
+      isValid: true,
+      servers: [
+        {
+          name: 'sqlrest',
+          description: 'Imported from JSON',
+          transport: { type: 'sse', url, headers: undefined },
+          originalConfig: { type: 'sse', url },
+        },
+      ],
+    });
+  });
 });

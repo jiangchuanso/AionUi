@@ -379,113 +379,81 @@ Adjust the script path and the endpoint, then import it:
   new-conversation screen (or set it as an assistant's default MCP); conversations
   that already exist will not pick it up.
 
-## 🔌 SQLREST Tool (MCP, manual JSON import)
+## 🔌 SQLREST Tool (native MCP over SSE)
 
-AionUi does **not** register any MCP server automatically. The SQLREST bridge
-ships as a standalone, self-contained script (`out/main/builtin-mcp-sqlrest.js`)
-built on the official MCP SDK with zod schemas — the SDK and zod are vendored at
-build time, so there is no `npm install` at runtime, and every tool argument is
-validated before the call is proxied. Add it once per account in **Settings →
-Tools → Add MCP Server**, which accepts the same `mcpServers` JSON shape other
-MCP clients use.
+AionUi connects **directly to the MCP server built into SQLREST**. There is no
+bridge script, no Swagger/OpenAPI scraping and no `SQLREST_*` environment
+variables in AionUi anymore. Add the server once per account in **Settings →
+Tools → Add MCP Server → Import from JSON**, which accepts the same `mcpServers`
+JSON shape other MCP clients use.
 
-Unlike the SearXNG tool, this server **auto-discovers** every published SQLREST
-API from the Gateway's Swagger/OpenAPI document and exposes **each one as its own
-MCP tool** — you do **not** enter interfaces one by one. Discovery needs **no
-Manager account, password or admin token**: document requests are unauthenticated
-read-only GETs. If no document is reachable, it falls back to a single generic
-`sqlrest_call` tool where you supply the path.
+### Why the native protocol is easier on the context window
 
-### 1. Find the script
+SQLREST's own MCP server exposes **only the tools an administrator has
+published** in the Manager UI (MCP Service → Tool Configuration). Every tool
+carries the description written for it and a JSON Schema generated from that
+API's parameter definitions, and calls are executed inside SQLREST with
+`apiPageSize` injected automatically. The old AionUi bridge instead turned
+_every_ operation in the Gateway's Swagger document into a separate tool: on a
+large deployment that flooded `tools/list` with hundreds of near-identical
+entries, crowded out useful context and made tool selection noisier. With the
+native protocol the tool list stays short and curated, so more of the context
+budget is left for the conversation and the data.
 
-| Deployment      | Script path                                                                                  |
-| --------------- | -------------------------------------------------------------------------------------------- |
-| `aionui-web`    | `<install dir>/out/main/builtin-mcp-sqlrest.js` (e.g. `~/.local/share/aionui-web`)           |
-| Desktop (Linux) | `<install dir>/resources/app.asar.unpacked/out/main/builtin-mcp-sqlrest.js`                  |
-| Desktop (Win)   | `%LOCALAPPDATA%\Programs\AionUi\resources\app.asar.unpacked\out\main\builtin-mcp-sqlrest.js` |
+### 1. Prepare SQLREST
 
-Building from source: `node scripts/build-mcp-servers.js` emits it into
-`out/main/`. When you copy the script elsewhere, take the sibling
-`out/main/package.json` along too — it pins that folder to CommonJS, and without
-it the bundle is misparsed as ESM. It runs on any `node` ≥ 18; AionUi's bundled
-Node works too.
+1. In the SQLREST Manager UI, open **MCP Service → Token Configuration** and
+   create a client token. The **View** dialog shows the ready-to-use _SSE
+   service address_, e.g. `http://127.0.0.1:8090/mcp/sse?token=<MCP_TOKEN>`.
+2. In **MCP Service → Tool Configuration**, publish the APIs the model should
+   be able to call. Write a clear description for each — it becomes the tool
+   description the model sees. Only published, online APIs appear in
+   `tools/list`, and changes are pushed to connected clients immediately.
+
+The MCP endpoints are served by the **Manager** (default port `8090`), **not**
+the Gateway (`8091`): the Gateway has no `/mcp` route. Behind a reverse proxy,
+use the external Manager address SQLREST was configured with
+(`SQLREST_MANAGER_URL`).
 
 ### 2. Paste this JSON
 
-Adjust the script path and the SQLREST connection, then import it:
+Replace `REPLACE_WITH_MCP_TOKEN` with the token from the View dialog, then
+import it:
 
 ```json
 {
   "mcpServers": {
     "sqlrest": {
-      "command": "node",
-      "args": ["/opt/aionui-web/out/main/builtin-mcp-sqlrest.js"],
-      "env": {
-        "SQLREST_BASE_URL": "http://127.0.0.1:8091",
-        "SQLREST_CLIENT_ID": "",
-        "SQLREST_CLIENT_SECRET": "",
-        "SQLREST_REFRESH_SECONDS": "300"
-      }
+      "type": "sse",
+      "url": "http://127.0.0.1:8090/mcp/sse?token=REPLACE_WITH_MCP_TOKEN"
     }
   }
 }
 ```
 
+Then click **Check MCP Availability** on the new server to verify the handshake
+and see the published tool list.
+
 ### 3. Notes
 
-- **No admin credentials.** The bridge never calls `/user/login` or
-  `/api/v1/assignment/search`, and has no Manager URL, username, password or
-  admin token setting. Remove any stale `SQLREST_MANAGER_*` / `SQLREST_USERNAME` /
-  `SQLREST_PASSWORD` entries from an older MCP config — they are ignored, but
-  they should not be left in a config file.
-- **Client credentials (same contract as `e:/qwen`).** Execution is
-  authenticated with `SQLREST_CLIENT_ID` / `SQLREST_CLIENT_SECRET`: the server
-  POSTs `{ "clientId": ..., "secret": ... }` to `<base_url>/token/generate`,
-  reads `data.accessToken` / `data.expireSeconds`, caches the token in memory
-  and attaches `Authorization: Bearer <accessToken>` only to `/api/**` calls.
-  A 401/403 clears the cached token so the next call re-exchanges it. Without
-  credentials, `open=true` endpoints still work unauthenticated; a static
-  `SQLREST_TOKEN` is supported as a legacy fallback. The secret is never
-  logged, never returned to the model and never sent during discovery.
-- **Document discovery (no per-API setup).** At startup the server reads
-  `<base_url>/apidoc/swagger.json` — the same document qwen uses — then falls
-  back to `/v3/api-docs`, `/v2/api-docs`, `/swagger-resources` and
-  `/apidoc/index.html`, or uses `SQLREST_OPENAPI_URL` when pinned. It registers
-  one tool per documented operation (named `sqlrest_<path>`, suffixed with the
-  method when two methods share a path); framework endpoints such as
-  `/actuator/**` and `/token/generate` are always excluded. Discovery repeats
-  every `SQLREST_REFRESH_SECONDS` (default 300) and newly added APIs trigger a
-  tool-list-changed notification.
-- **Generic fallback.** If no document is reachable, or you set
-  `SQLREST_OPENAPI_DISABLE=1`, only `sqlrest_call` (takes a `path` argument) is
-  exposed, so every endpoint stays reachable manually.
-- **Validated arguments.** Each tool's zod schema is generated from the
-  documented parameters: names, types (`integer` / `number` / `boolean` /
-  `array` / `enum`), required flags and descriptions. Undocumented DSL arguments
-  still pass through. Path placeholders such as `{id}` are filled from `params`.
-- **Environment variables** (names mirror qwen's `sqlrest` config block).
-  | Variable | Default | Purpose |
-  | ----------------------- | --------------------------- | ---------------------------------------------------------------------------------------------------- |
-  | `SQLREST_BASE_URL` | `http://127.0.0.1:8091` | Gateway root; the execution base defaults to `<base_url>/api`. |
-  | `SQLREST_CLIENT_ID` | _(empty)_ | Client application id for `/token/generate`. |
-  | `SQLREST_CLIENT_SECRET` | _(empty)_ | Client application secret; only sent in the token exchange body. |
-  | `SQLREST_REFRESH_SECONDS` | `300` | Interface-list TTL / re-discovery interval (qwen's `refresh_seconds`). |
-  | `SQLREST_ENABLED` | `1` | Set to `0` to disable all upstream requests without removing the MCP server. |
-  | `SQLREST_TOKEN` | _(empty)_ | Legacy static bearer token, used only when client credentials are absent. |
-  | `SQLREST_API_BASE_URL` | `<base_url>/api` | Override the derived execution base (e.g. `:8092/api` for the Executor). |
-  | `SQLREST_OPENAPI_URL` | _(empty)_ | Explicit Swagger/OpenAPI JSON URL; probed before the built-in candidates. |
-  | `SQLREST_OPENAPI_PATH_PREFIX` | `/api/` | Only paths containing this prefix become tools; set to empty to accept all non-framework paths. |
-  | `SQLREST_OPENAPI_ALLOW_CROSS_ORIGIN` | _(off)_ | Set to `1` if the document is served from a different origin. |
-  | `SQLREST_OPENAPI_DISABLE` | _(off)_ | Set to `1` to skip all discovery requests (generic tool only). |
-- **Execution.** Each tool call is proxied to `<base_url>/api/<path>` (or the
-  `SQLREST_API_BASE_URL` override) with the API method (GET/POST/PUT/DELETE).
-  `params` become query string for
-  GET and JSON body for writes; `body` overrides `params` for write methods.
-  The exchanged `accessToken` is sent as `Authorization: Bearer`. Errors
-  returned to the model use fixed wording; upstream addresses, ports and
-  credentials are only written to the local stderr log. The JSON response is
-  returned as text.
-- **Reachability.** URLs must be reachable from the machine running AionUi —
+- **Use SSE, not `http`.** SQLREST also advertises a _Streamable HTTP_ address
+  (`/mcp`), but that endpoint is a stateless single-endpoint JSON-RPC service:
+  it has no `Mcp-Session-Id`, rejects GET/DELETE and always answers with the
+  `2024-11-05` protocol version. AionUi's `http` transport is a standard
+  Streamable HTTP client and will not work against it. `/mcp/sse` is the fully
+  implemented MCP 2024-11-05 transport (SSE plus `/mcp/message`).
+- **The token belongs in the URL.** SQLREST reads it from the `token` query
+  parameter of `/mcp/sse`; it does not read an `Authorization` header. Keep it
+  out of screenshots and shared configs.
+- **Migrating from the old bridge.** Delete the old `sqlrest` MCP server that
+  points at `builtin-mcp-sqlrest.js` and its `SQLREST_*` environment variables
+  before importing the JSON above — that script is no longer shipped. The
+  `clientId` / `secret` pair used for `/token/generate` is **not** an MCP token;
+  create a dedicated one in Token Configuration.
+- **Tools are a whitelist.** If the model cannot find an API, publish it in the
+  Manager UI rather than adding another MCP server. `tools/list` has no
+  meta-tool for discovering unpublished APIs.
+- **Reachability.** The URL must be reachable from the machine running AionUi —
   inside Docker, `127.0.0.1` is the container itself, use the host/LAN address.
 
 ## ✨ Cowork in Action

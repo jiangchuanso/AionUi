@@ -14,7 +14,7 @@ import { ensureAdminPassword, generateInitialPassword, setAdminPasswordViaCli } 
 //   ├── package.json             ← for runtime version lookup
 //   ├── bundled-aioncore/<plat-arch>/aioncore[.exe]
 //   ├── static/                  ← SPA assets
-//   └── out/main/builtin-mcp-*.js        ← optional MCP scripts (searxng, sqlrest),
+//   └── out/main/builtin-mcp-*.js        ← optional MCP script (searxng),
 //                                          imported manually via Settings → Tools
 //                                          (see README)
 //

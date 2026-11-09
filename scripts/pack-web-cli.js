@@ -78,7 +78,7 @@ if (fs.existsSync(rendererOutDir)) {
   throw new Error(`Desktop renderer output not found at ${rendererOutDir}. Run bunx electron-vite build first.`);
 }
 
-// 6b. Ship the standalone MCP server scripts (SearXNG search, SQLREST bridge).
+// 6b. Ship the standalone MCP server script (SearXNG search).
 // They are NOT registered automatically (users add them via Settings → Tools →
 // JSON import, see README). Emitted by scripts/build-mcp-servers.js into
 // out/main/ during the electron-vite main build; the tarball keeps the same
@@ -94,7 +94,7 @@ execSync(`node "${path.join(projectRoot, 'scripts/build-mcp-servers.js')}"`, {
 });
 const mcpScriptDest = path.join(tarballContentDir, 'out/main');
 fs.mkdirSync(mcpScriptDest, { recursive: true });
-for (const scriptName of ['builtin-mcp-searxng.js', 'builtin-mcp-sqlrest.js']) {
+for (const scriptName of ['builtin-mcp-searxng.js']) {
   const mcpScriptSrc = path.join(projectRoot, 'out/main', scriptName);
   if (!fs.existsSync(mcpScriptSrc)) {
     throw new Error(
