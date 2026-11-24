@@ -8,7 +8,12 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { FileService, UploadFailedError } from '@/renderer/services/FileService';
+import {
+  FileService,
+  SIGNATURE_BLOCKED_EXECUTABLE,
+  SIGNATURE_BLOCKED_MISMATCH,
+  UploadFailedError,
+} from '@/renderer/services/FileService';
 
 interface FakeOutcome {
   status: number;
@@ -60,6 +65,8 @@ function makeFileList(files: File[]): FileList {
   }) as unknown as FileList;
 }
 
+const zipHeader = (): Uint8Array => new Uint8Array([0x50, 0x4b, 0x03, 0x04]);
+
 const ok = (data: string): FakeOutcome => ({ status: 200, body: JSON.stringify({ success: true, data }) });
 const fail = (): FakeOutcome => ({ status: 500, body: JSON.stringify({ success: false }) });
 
@@ -103,6 +110,30 @@ describe('FileService.processDroppedFiles upload failure reporting', () => {
       expect(e.processed[0].path).toBe('/up/ok.txt');
       expect(e.failed).toHaveLength(1);
       expect(e.failed[0].name).toBe('bad.txt');
+    });
+  });
+
+  it('drops a renamed executable before it reaches the upload endpoint', async () => {
+    OUTCOMES = [ok('/up/picture.png')]; // queued response must stay unconsumed
+    await runWithFakeXhr(async () => {
+      const exe = new File([new Uint8Array([0x4d, 0x5a, 0x90, 0x00])], 'picture.png');
+      const err = await FileService.processDroppedFiles(makeFileList([exe])).catch((e) => e);
+      expect(err).toBeInstanceOf(UploadFailedError);
+      expect((err as UploadFailedError).failed[0].message).toBe(SIGNATURE_BLOCKED_EXECUTABLE);
+      expect(OUTCOMES).toHaveLength(1);
+    });
+  });
+
+  it('keeps a valid attachment when a mislabelled one is rejected', async () => {
+    OUTCOMES = [ok('/up/report.docx')];
+    await runWithFakeXhr(async () => {
+      const list = makeFileList([new File([zipHeader()], 'picture.png'), new File([zipHeader()], 'report.docx')]);
+      const err = await FileService.processDroppedFiles(list).catch((e) => e);
+      expect(err).toBeInstanceOf(UploadFailedError);
+      const e = err as UploadFailedError;
+      expect(e.failed[0].message).toBe(SIGNATURE_BLOCKED_MISMATCH);
+      expect(e.processed).toHaveLength(1);
+      expect(e.processed[0].path).toBe('/up/report.docx');
     });
   });
 });

@@ -7,12 +7,17 @@
 import { applyCsrfHeadersToXhr, isCsrfRejection } from '@/common/adapter/csrf';
 import { getBaseUrl } from '@/common/adapter/httpBridge';
 import { trackUpload, type UploadSource } from '@/renderer/hooks/file/useUploadState';
+import { verifyFileSignature } from '@/renderer/utils/file/fileType';
 
 /** Sentinel error message used when an upload is cancelled by the caller. */
 export const UPLOAD_ABORTED_ERROR = 'Upload aborted';
 
 /** Sentinel error message used when the backend refuses the upload over CSRF. */
 export const UPLOAD_CSRF_ERROR = 'UPLOAD_CSRF_REJECTED';
+
+/** Sentinel messages for attachments rejected by the pre-upload signature filter. */
+export const SIGNATURE_BLOCKED_EXECUTABLE = 'SIGNATURE_BLOCKED_EXECUTABLE';
+export const SIGNATURE_BLOCKED_MISMATCH = 'SIGNATURE_BLOCKED_MISMATCH';
 
 /**
  * Turn a non-2xx upload response into the most specific error we can.
@@ -370,8 +375,21 @@ class FileServiceClass {
     const processedFiles: FileMetadata[] = [];
     const failed: { name: string; message: string }[] = [];
 
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
+    // Read only the leading bytes of every attachment up front, so no upload
+    // slot is spent on renamed executables or mislabelled formats. Parallel
+    // reads keep a multi-file drop from serialising on header inspection.
+    const entries = await Promise.all(
+      Array.from(files, async (file) => ({ file, check: await verifyFileSignature(file) }))
+    );
+
+    for (const { file, check } of entries) {
+      if (!check.ok) {
+        failed.push({
+          name: file.name,
+          message: check.reason === 'executable' ? SIGNATURE_BLOCKED_EXECUTABLE : SIGNATURE_BLOCKED_MISMATCH,
+        });
+        continue;
+      }
 
       // Each upload owns its own AbortController; the tracker exposes an `abort()`
       // that triggers the signal so user-driven cancel and conversation-switch
