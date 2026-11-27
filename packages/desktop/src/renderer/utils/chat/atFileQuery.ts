@@ -32,6 +32,9 @@ function isBoundaryChar(char: string): boolean {
   return AT_FILE_BOUNDARY_RE.test(char);
 }
 
+/** Boundary alphabet for callers inserting an `@file` mention at an arbitrary caret. */
+export const isAtFileBoundaryChar = (char: string): boolean => isBoundaryChar(char);
+
 function isEscaped(value: string, index: number): boolean {
   let backslashCount = 0;
   let cursor = index - 1;

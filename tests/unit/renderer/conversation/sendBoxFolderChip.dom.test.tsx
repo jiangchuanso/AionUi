@@ -214,6 +214,49 @@ const appendToChat = async (item: FileOrFolderItem): Promise<void> => {
 // close button. Count chips by their close buttons to stay resilient to labels.
 const chipCount = (): number => document.querySelectorAll('.arco-tag-close-btn').length;
 
+// Workspace "add to chat" now routes through a mention-insert event. This
+// harness keeps the input controlled so the token committed by SendBox is
+// observable, while mirroring AcpSendBox's ref merge on the append lane.
+const MentionHarness: React.FC = () => {
+  const [value, setValue] = useState('');
+  const [items, setItems] = useState<FileSelectionItem[]>([]);
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
+
+  useAddEventListener(
+    'acp.selected.file',
+    (next: FileSelectionItem[], tid: string | undefined) => {
+      if (tid === undefined || tid === CONVERSATION_ID) setItems(next);
+    },
+    []
+  );
+  useAddEventListener(
+    'acp.selected.file.append',
+    (additions: FileSelectionItem[], tid: string | undefined) => {
+      if (tid !== undefined && tid !== CONVERSATION_ID) return;
+      const merged = mergeFileSelectionItems(itemsRef.current, additions);
+      if (merged !== itemsRef.current) setItems(merged as FileSelectionItem[]);
+    },
+    []
+  );
+
+  return (
+    <SendBox
+      value={value}
+      onChange={setValue}
+      onSend={vi.fn().mockResolvedValue(undefined)}
+      selectedWorkspaceItems={items}
+      onSelectedWorkspaceItemsChange={(next) => emitter.emit('acp.selected.file', next, CONVERSATION_ID)}
+    />
+  );
+};
+
+const mentionWorkspaceFile = async (item: FileOrFolderItem): Promise<void> => {
+  await act(async () => {
+    emitter.emit('sendbox.mention.file', item, CONVERSATION_ID);
+  });
+};
+
 describe('SendBox add-folder-to-chat produces a chip', () => {
   it('renders a chip for a file (baseline — never regressed)', async () => {
     render(<Harness />);
@@ -297,5 +340,26 @@ describe('SendBox add-folder-to-chat produces a chip', () => {
     await waitFor(() => expect(screen.queryByText('zed')).not.toBeInTheDocument());
     expect(screen.getByText('openclaw')).toBeInTheDocument();
     expect(chipCount()).toBe(1);
+  });
+});
+
+describe('SendBox workspace add-to-chat inserts an @ token into the input', () => {
+  it('inserts the file reference as text, not as an attachment chip', async () => {
+    render(<MentionHarness />);
+    await mentionWorkspaceFile(fileItem('peA', 'src/main.ts', 'main.ts'));
+
+    const textarea = document.querySelector('textarea') as HTMLTextAreaElement;
+    await waitFor(() => expect(textarea.value).toContain('@src/main.ts'));
+    expect(chipCount()).toBe(0);
+  });
+
+  it('keeps the chip fallback for a pe root whose relative path is empty', async () => {
+    render(<MentionHarness />);
+    await mentionWorkspaceFile(folderItem('peZed', '', 'zed'));
+
+    await waitFor(() => expect(screen.getByText('zed')).toBeInTheDocument());
+    expect(chipCount()).toBe(1);
+    const textarea = document.querySelector('textarea') as HTMLTextAreaElement;
+    expect(textarea.value).not.toContain('@');
   });
 });

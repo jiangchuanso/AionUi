@@ -20,6 +20,7 @@ import {
   buildAtFileInsertion,
   getActiveAtFileQuery,
   getAllAtFileQueries,
+  isAtFileBoundaryChar,
   resolveAtFileMenuKey,
 } from '@/renderer/utils/chat/atFileQuery';
 import type { SessionMentionTarget, SessionRef } from '@/common/adapter/ipcBridge';
@@ -32,7 +33,11 @@ import {
   resolveAtSessionMenuKey,
 } from '@/renderer/utils/chat/atSessionQuery';
 import { buildAttachedMentionRanges } from '@/renderer/utils/chat/mentionHighlight';
-import { applyMentionInsertion, insertMentionAtCaret } from '@/renderer/utils/chat/mentionInsertion';
+import {
+  applyMentionInsertion,
+  insertMentionAtCaret,
+  type MentionInsertion,
+} from '@/renderer/utils/chat/mentionInsertion';
 import { reconcileSessionRefs } from './sessionMentionReconcile';
 import { getLastAssistantText } from '@/renderer/utils/chat/getLastAssistantText';
 import { formatRelativeTime } from '@/renderer/utils/chat/relativeTime';
@@ -1143,30 +1148,19 @@ const SendBox: React.FC<{
     [conversationContext?.type, conversationContext?.conversation_id]
   );
 
-  const insertSelectedAtFile = useCallback(
-    (item: FileOrFolderItem) => {
-      if (!activeAtFileQuery) {
+  // Shared landing for both `@` file lanes: the picker replaces an existing
+  // token, while Explorer "add to chat" inserts one at an arbitrary caret. Both
+  // must attach the ref, suppress the attachment chip, and restore the caret.
+  const commitFileMention = useCallback(
+    (item: FileOrFolderItem, insertion: MentionInsertion, tokenStart: number) => {
+      const insertedText = buildAtFileInsertion(item);
+      if (!insertedText) {
         return;
       }
-
-      const nextInsertion = buildAtFileInsertion(item);
-      if (!nextInsertion) {
-        return;
-      }
-      // Trailing space when the mention ends the input: without it the next `@`
-      // is not recognised as a new token, so a second file could not be
-      // mentioned without the user typing the separator by hand.
-      const { value: nextValue, caret: nextCaret } = applyMentionInsertion(
-        input,
-        activeAtFileQuery.start,
-        activeAtFileQuery.end,
-        nextInsertion
-      );
-      const insertedTokenKey = `${activeAtFileQuery.start}:${nextInsertion.slice(1)}`;
       const path = getSelectedItemKey(item);
 
-      setDismissedAtFileToken(insertedTokenKey);
-      setInput(nextValue);
+      setDismissedAtFileToken(`${tokenStart}:${insertedText.slice(1)}`);
+      setInput(insertion.value);
       if (path) {
         rememberSelectedItem(selectedItemByPathRef.current, item);
         mentionOwnedPathsRef.current.add(path);
@@ -1191,19 +1185,55 @@ const SendBox: React.FC<{
           return;
         }
         textarea.focus();
-        textarea.setSelectionRange(nextCaret, nextCaret);
-        setCaretPosition(nextCaret);
+        textarea.setSelectionRange(insertion.caret, insertion.caret);
+        setCaretPosition(insertion.caret);
       });
     },
-    [
-      activeAtFileQuery,
-      emitSelectedFileAppend,
-      getTextareaElement,
-      input,
-      onSelectedWorkspaceItemsChange,
-      selectedWorkspaceItems,
-      setInput,
-    ]
+    [emitSelectedFileAppend, getTextareaElement, onSelectedWorkspaceItemsChange, selectedWorkspaceItems, setInput]
+  );
+
+  const insertSelectedAtFile = useCallback(
+    (item: FileOrFolderItem) => {
+      if (!activeAtFileQuery) {
+        return;
+      }
+      const insertedText = buildAtFileInsertion(item);
+      if (!insertedText) {
+        return;
+      }
+      // Trailing space when the mention ends the input: without it the next `@`
+      // is not recognised as a new token, so a second file could not be
+      // mentioned without the user typing the separator by hand.
+      const insertion = applyMentionInsertion(input, activeAtFileQuery.start, activeAtFileQuery.end, insertedText);
+      commitFileMention(item, insertion, activeAtFileQuery.start);
+    },
+    [activeAtFileQuery, commitFileMention, input]
+  );
+
+  const insertWorkspaceFileMention = useCallback(
+    (item: FileOrFolderItem) => {
+      const insertedText = buildAtFileInsertion(item);
+      if (!insertedText) {
+        // A pe ROOT has an empty relative path, so there is no `@` token that
+        // could resolve back to it. Keep the attachment chip for that case.
+        emitSelectedFileAppend(item);
+        return;
+      }
+      const insertion = insertMentionAtCaret(input, caretPosition, insertedText, isAtFileBoundaryChar);
+      const tokenStart = insertion.value.indexOf(insertedText, Math.max(0, insertion.caret - insertedText.length - 1));
+      commitFileMention(item, insertion, tokenStart >= 0 ? tokenStart : insertion.caret - insertedText.length);
+    },
+    [caretPosition, commitFileMention, emitSelectedFileAppend, input]
+  );
+
+  useAddEventListener(
+    'sendbox.mention.file',
+    (item: FileOrFolderItem, targetConversationId: string | undefined) => {
+      if (acceptsTarget(targetConversationId)) {
+        insertWorkspaceFileMention(item);
+      }
+    },
+    [conversationContext?.conversation_id, insertWorkspaceFileMention]
   );
 
   const insertSelectedAtSession = useCallback(

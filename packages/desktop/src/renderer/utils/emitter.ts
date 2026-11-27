@@ -60,6 +60,12 @@ interface EventTypes {
    * the send box of that conversation may react.
    */
   'sendbox.mention.session': [{ id: string; name: string }, string | undefined];
+  /**
+   * Insert a workspace file reference as an `@path` token in the target send
+   * box's text, instead of attaching a chip above the input. The 2nd arg is the
+   * target conversation id, same routing rule as the file selection lanes.
+   */
+  'sendbox.mention.file': [FileOrFolderItem, string | undefined];
 }
 
 export const emitter = new EventEmitter<EventTypes>();

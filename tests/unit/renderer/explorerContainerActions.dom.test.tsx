@@ -342,25 +342,21 @@ describe('ExplorerContainer add-to-chat', () => {
     expect(await screen.findByTestId('add-to-chat-enabled')).toHaveTextContent('no');
   });
 
-  it('emits the append on all agent prefixes carrying the active conversation id (targeted)', async () => {
+  it('emits a sendbox file-mention insert carrying the active conversation id (targeted)', async () => {
     activeConversationId = 'c1';
     renderIt();
     expect(await screen.findByTestId('add-to-chat-enabled')).toHaveTextContent('yes');
     fireEvent.click(screen.getByTestId('do-add-to-chat'));
-    await waitFor(() => expect(emit).toHaveBeenCalledTimes(3));
-    const payload = [
-      {
-        path: 'src/main.ts',
-        name: 'main.ts',
-        isFile: true,
-        chatRef: { kind: 'project', pe_id: 'peA', relative_path: 'src/main.ts' },
-      },
-    ];
-    // Every prefix carries the target id 'c1' — only the box whose conversation
-    // matches consumes it (ids are unique), so same-type team peers don't leak.
-    expect(emit).toHaveBeenCalledWith('acp.selected.file.append', payload, 'c1');
-    expect(emit).toHaveBeenCalledWith('codex.selected.file.append', payload, 'c1');
-    expect(emit).toHaveBeenCalledWith('aionrs.selected.file.append', payload, 'c1');
+    await waitFor(() => expect(emit).toHaveBeenCalledTimes(1));
+    const item = {
+      path: 'src/main.ts',
+      name: 'main.ts',
+      isFile: true,
+      chatRef: { kind: 'project', pe_id: 'peA', relative_path: 'src/main.ts' },
+    };
+    // No agent-prefix fan-out: one mention event targets only the matching
+    // conversation's send box, so same-type team peers don't leak.
+    expect(emit).toHaveBeenCalledWith('sendbox.mention.file', item, 'c1');
   });
 });
 

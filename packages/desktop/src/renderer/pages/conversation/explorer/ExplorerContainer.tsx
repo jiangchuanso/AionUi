@@ -329,26 +329,18 @@ export const ExplorerContainer: React.FC<ExplorerContainerProps> = ({ projectId 
     });
   };
 
-  // Add a tree node to the active conversation's send box as a project file ref.
-  // The item carries a `chatRef` so a send collects it as a project ref (backend
-  // resolves pe → absolute path). We emit on all agent prefixes carrying the
-  // active conversation id; each send box accepts only when the id matches its
-  // own conversation (ids are unique), so on the multi-column team route only the
-  // focused member's box receives it — no leak to same-type peers.
+  // Add a tree node to the active conversation's send box as an `@path` token
+  // in the input text, not as an attachment chip above it. The item carries a
+  // `chatRef` so a send still collects it as a project ref (backend resolves
+  // pe → absolute path). The target conversation id keeps the token out of
+  // same-type send boxes on the multi-column team route.
   const handleAddToChat = (peId: string, rel: string, name: string, isFile: boolean): void => {
     if (!activeConversationId) return;
     const item: FileOrFolderItem = { path: rel, name, isFile, chatRef: projectFileRef(peId, rel) };
-    const payload: FileOrFolderItem[] = [item];
-    emitter.emit('acp.selected.file.append', payload, activeConversationId);
-    emitter.emit('codex.selected.file.append', payload, activeConversationId);
-    emitter.emit('aionrs.selected.file.append', payload, activeConversationId);
-    // Optimistic success: the emitter is fire-and-forget with no landing ack, so
-    // this reports "dispatched", not "rendered a chip". It is accurate whenever a
-    // send box for this conversation is mounted (the type-matching box consumes
-    // the event synchronously). The chip-drop bugs that made this toast lie for a
-    // folder / pe-root ref (empty-path identity + the folder render filter) are
-    // fixed in SendBox; a genuine no-op only remains in the edge case where no
-    // send box is mounted for the active conversation.
+    emitter.emit('sendbox.mention.file', item, activeConversationId);
+    // Optimistic success: the emitter is fire-and-forget with no landing ack,
+    // so this reports "dispatched", not "rendered a token". A genuine no-op
+    // only remains when no send box is mounted for the active conversation.
     Message.success(t('conversation.explorer.addedToChat', { name }));
   };
 
