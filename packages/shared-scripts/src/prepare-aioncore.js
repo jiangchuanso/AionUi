@@ -255,12 +255,38 @@ function downloadFile(url, outputPath) {
   }
 }
 
+/**
+ * Build the PowerShell command used to extract a zip archive.
+ *
+ * Uses the 2-argument .NET API directly: Expand-Archive -Force resolves to a
+ * 3-argument overload that is unavailable in Windows PowerShell 5.1 when it
+ * inherits PowerShell 7's PSModulePath (as CI pwsh steps do).
+ *
+ * @param {string} archivePath - Zip archive to extract
+ * @param {string} outputDir - Destination directory (always freshly created)
+ * @returns {string} PowerShell -Command script
+ */
+function buildWindowsExtractCommand(archivePath, outputDir) {
+  const archive = archivePath.replace(/'/g, "''");
+  const destination = outputDir.replace(/'/g, "''");
+  return [
+    "$ErrorActionPreference = 'Stop'",
+    'try { Add-Type -AssemblyName System.IO.Compression.FileSystem } catch { }',
+    'try { Add-Type -AssemblyName System.IO.Compression.ZipFile } catch { }',
+    `try { [System.IO.Compression.ZipFile]::ExtractToDirectory('${archive}', '${destination}') } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }`,
+  ].join('; ');
+}
+
 function extractArchive(archivePath, outputDir, platform) {
   ensureDirectory(outputDir);
   if (platform === 'win32' || archivePath.endsWith('.zip')) {
     if (platform === 'win32') {
-      const ps = `Expand-Archive -LiteralPath '${archivePath.replace(/'/g, "''")}' -DestinationPath '${outputDir.replace(/'/g, "''")}' -Force`;
-      execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', ps]);
+      execFileSync('powershell', [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        buildWindowsExtractCommand(archivePath, outputDir),
+      ]);
     } else {
       execFileSync('unzip', ['-o', archivePath, '-d', outputDir]);
     }
@@ -616,6 +642,8 @@ function prepareAioncore(options) {
 }
 
 module.exports = {
+  buildWindowsExtractCommand,
+  extractArchive,
   getActionsArtifactMissingMessage,
   getActionsArtifactName,
   prepareAioncore,

@@ -1,9 +1,16 @@
-import { describe, expect, it } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { describe, expect, it } from 'vitest';
 
-const { prepareAioncore } = require('../../../packages/shared-scripts/src/prepare-aioncore');
+const {
+  buildWindowsExtractCommand,
+  extractArchive,
+  prepareAioncore,
+} = require('../../../packages/shared-scripts/src/prepare-aioncore');
+
+const win32It = process.platform === 'win32' ? it : it.skip;
 
 describe('prepare-aioncore local bundle input', () => {
   it('hard fails local bundle input that lacks managed-resources manifest', () => {
@@ -27,6 +34,39 @@ describe('prepare-aioncore local bundle input', () => {
     } finally {
       if (previous === undefined) delete process.env.AIONUI_BACKEND_LOCAL_BUNDLE_DIR;
       else process.env.AIONUI_BACKEND_LOCAL_BUNDLE_DIR = previous;
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('prepare-aioncore Windows archive extraction', () => {
+  it('uses the 2-argument .NET API rather than Expand-Archive -Force', () => {
+    const command = buildWindowsExtractCommand("C:/tmp/weird'archive.zip", 'C:/tmp/out');
+    expect(command).toContain(
+      "[System.IO.Compression.ZipFile]::ExtractToDirectory('C:/tmp/weird''archive.zip', 'C:/tmp/out')"
+    );
+    expect(command).not.toContain('Expand-Archive');
+    expect(command).toContain('exit 1');
+  });
+
+  win32It('extracts a zip using the PowerShell command', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'aionui-win-extract-'));
+    try {
+      const srcDir = join(tmp, 'src');
+      mkdirSync(srcDir);
+      writeFileSync(join(srcDir, 'aioncore.exe'), 'aioncore');
+      const archivePath = join(tmp, 'aioncore.zip');
+      execFileSync('powershell', [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        `Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::CreateFromDirectory('${srcDir}', '${archivePath}')`,
+      ]);
+
+      const outputDir = join(tmp, 'out');
+      extractArchive(archivePath, outputDir, 'win32');
+      expect(existsSync(join(outputDir, 'aioncore.exe'))).toBe(true);
+    } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
   });
